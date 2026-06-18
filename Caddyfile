@@ -1,0 +1,20 @@
+# Reverse proxy + HTTPS + basic auth for the RAG file assistant.
+#
+# The site is addressed by raw IP (46.62.202.18). Public CAs do not issue certs
+# for bare IPs, so Caddy serves HTTPS with its own internal CA (self-signed) via
+# `tls internal`. Browsers/curl will warn about the cert — use `curl -k` or trust
+# Caddy's root CA. Plain HTTP on :80 is also served (not redirected).
+
+{
+	auto_https disable_redirects
+}
+
+46.62.202.18 {
+	tls internal
+
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_PASSWORD}
+	}
+
+	reverse_proxy fastapi:8000
+}

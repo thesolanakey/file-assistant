@@ -1,0 +1,27 @@
+# Web framework / server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+
+# Config
+python-dotenv==1.0.1
+
+# Vector DB client
+qdrant-client==1.12.2
+
+# Embeddings (nomic-ai/nomic-embed-text-v1 needs einops + trust_remote_code).
+# torch (CPU build) is installed separately in the Dockerfile to avoid the
+# multi-GB CUDA wheels.
+sentence-transformers==3.3.1
+einops==0.8.0
+
+# Generation backend
+anthropic==0.42.0
+
+# File watching
+watchdog==6.0.0
+
+# Parsers
+pdfplumber==0.11.4
+python-docx==1.1.2
+pandas==2.2.3

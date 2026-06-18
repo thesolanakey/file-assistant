@@ -1,0 +1,52 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant-storage:/qdrant/storage
+    networks:
+      - rag-net
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-fastapi
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./watch:/app/watch
+    depends_on:
+      - qdrant
+    networks:
+      - rag-net
+
+  caddy:
+    image: caddy:2
+    container_name: rag-caddy
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - fastapi
+    networks:
+      - rag-net
+
+networks:
+  rag-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

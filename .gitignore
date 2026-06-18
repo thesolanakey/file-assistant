@@ -1,0 +1,14 @@
+.env
+qdrant-storage/*
+!qdrant-storage/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store
+watch/documents/*
+watch/notes/*
+watch/exports/*
+watch/pdfs/*
+watch/code/*
+!watch/**/.gitkeep
+*.db
+venv/
