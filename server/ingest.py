@@ -14,7 +14,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -27,6 +28,10 @@ router = APIRouter()
 
 _qdrant: QdrantClient | None = None
 _qdrant_lock = threading.Lock()
+
+# Absolute paths currently being ingested via /upload. The file watcher skips
+# these so it can't race the upload and ingest the file without its note.
+_uploading: set[str] = set()
 
 # Extensions / names we never ingest.
 _SKIP_EXTENSIONS = {".pyc", ".db"}
@@ -105,8 +110,13 @@ def _already_ingested(filename: str, filesize: int) -> bool:
     return len(points) > 0
 
 
-def ingest_path(path: str) -> dict:
-    """Parse, chunk, embed, and store a single file. Returns a status dict."""
+def ingest_path(path: str, note: str | None = None) -> dict:
+    """Parse, chunk, embed, and store a single file. Returns a status dict.
+
+    If ``note`` is provided it is embedded as its own searchable chunk (so a
+    query about the file's description retrieves it) and stored on every point's
+    payload as ``note``.
+    """
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
     if _should_skip(path):
@@ -120,6 +130,12 @@ def ingest_path(path: str) -> dict:
         return {"status": "skipped", "reason": "already ingested", "path": path}
 
     chunks = parse_file(path)
+
+    note = (note or "").strip()
+    if note:
+        # Prepend the note as a self-describing, searchable chunk.
+        chunks = [f"File note for {filename}: {note}"] + chunks
+
     if not chunks:
         return {"status": "skipped", "reason": "no extractable text", "path": path}
 
@@ -143,12 +159,13 @@ def ingest_path(path: str) -> dict:
                     "filesize": filesize,
                     "date_ingested": date_ingested,
                     "source": source,
+                    "note": note,
                 },
             )
         )
 
     get_qdrant().upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
-    return {"status": "ingested", "path": path, "chunks": len(points)}
+    return {"status": "ingested", "path": path, "chunks": len(points), "note": note}
 
 
 # --- File watcher -----------------------------------------------------------
@@ -175,6 +192,9 @@ class _Handler:
 
     @staticmethod
     def _safe_ingest(path: str) -> None:
+        # An /upload is handling this file (with its note) — don't race it.
+        if os.path.abspath(path) in _uploading:
+            return
         try:
             result = ingest_path(path)
             print(f"[ingest] {result}", flush=True)
@@ -233,3 +253,40 @@ def ingest_endpoint(req: IngestRequest):
         raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/upload")
+async def upload_endpoint(
+    file: UploadFile = File(...),
+    note: str = Form(""),
+):
+    """Accept a multipart upload (file + note), save it to watch/documents/,
+    and ingest it with the note stored/searchable alongside the file."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="no filename provided")
+
+    filename = os.path.basename(file.filename)
+    dest_dir = os.path.join(settings.WATCH_DIR, "documents")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, filename)
+    abspath = os.path.abspath(dest)
+
+    # Register before writing so the watcher's on_created skips this file.
+    _uploading.add(abspath)
+    try:
+        contents = await file.read()
+        with open(dest, "wb") as f:
+            f.write(contents)
+        # Embedding is CPU-bound — run it off the event loop.
+        result = await run_in_threadpool(ingest_path, dest, note)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        _uploading.discard(abspath)
+
+    return {
+        "status": result.get("status", "ingested"),
+        "filename": filename,
+        "note": (note or "").strip(),
+        "detail": result,
+    }

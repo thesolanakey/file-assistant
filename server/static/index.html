@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>File Assistant</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d212b;
+    --border: #2a2f3a;
+    --text: #e6e8ee;
+    --muted: #9aa3b2;
+    --accent: #6ea8fe;
+    --accent-press: #4f8cf0;
+    --badge: #2a3242;
+    --ok: #57c98a;
+    --shadow: rgba(0,0,0,0.4);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 16px 14px 48px;
+  }
+  header h1 {
+    font-size: 1.35rem;
+    margin: 8px 0 2px;
+    letter-spacing: 0.2px;
+  }
+  header p {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .tab {
+    flex: 0 0 auto;
+    background: var(--panel);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 9px 16px;
+    font-size: 0.92rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .tab.active {
+    background: var(--panel-2);
+    color: var(--text);
+    border-color: var(--accent);
+  }
+
+  /* Upload zone */
+  .upload-zone {
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 16px 14px;
+    margin-bottom: 16px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .upload-zone.drag {
+    border-color: var(--accent);
+    background: var(--panel-2);
+  }
+  .drop-prompt { color: var(--muted); font-size: 0.9rem; text-align: center; }
+  .link {
+    background: none; border: none; padding: 0;
+    color: var(--accent); cursor: pointer; font-size: inherit; text-decoration: underline;
+  }
+  .staged-name {
+    font-weight: 600; font-size: 0.92rem; margin-bottom: 10px; word-break: break-all;
+  }
+  .staged-name .badge { margin-left: 6px; }
+  #note-input {
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    font-family: inherit;
+    margin-bottom: 10px;
+  }
+  #note-input:focus { outline: none; border-color: var(--accent); }
+  .upload-actions { display: flex; gap: 8px; }
+  .progress {
+    height: 8px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; overflow: hidden; margin-top: 12px;
+  }
+  .progress .bar {
+    height: 100%; width: 0%; background: var(--accent);
+    transition: width 0.15s ease;
+  }
+  .upload-status { margin-top: 10px; font-size: 0.85rem; }
+  .upload-status.ok { color: var(--ok); }
+  .upload-status.err { color: #ff8b8b; }
+
+  .ask-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  textarea#q {
+    flex: 1 1 auto;
+    resize: vertical;
+    min-height: 48px;
+    max-height: 200px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 12px;
+    font-size: 1rem;
+    font-family: inherit;
+  }
+  textarea#q:focus { outline: none; border-color: var(--accent); }
+  button.primary {
+    flex: 0 0 auto;
+    background: var(--accent);
+    color: #0b1220;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  button.primary:hover { background: var(--accent-press); }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+
+  .spinner-wrap {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 18px 2px;
+  }
+  .spinner-wrap.show { display: flex; }
+  .spinner {
+    width: 20px; height: 20px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .mode-line {
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 4px 0 12px;
+  }
+  .mode-pill {
+    display: inline-block;
+    background: var(--badge);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 0.75rem;
+    color: var(--accent);
+    margin-right: 6px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 13px 14px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px var(--shadow);
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .fname {
+    font-weight: 600;
+    font-size: 0.92rem;
+    word-break: break-all;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--badge);
+    color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .score {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .note-line {
+    font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-style: italic;
+  }
+  .chunk-text, .summary-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.88rem;
+    color: var(--text);
+  }
+  .chunk-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: #cdd3df;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .summary-card .summary-text { font-size: 0.95rem; }
+  .sources {
+    margin-top: 12px;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .sources .badge { margin: 2px 4px 2px 0; color: var(--muted); }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .file-meta {
+    width: 100%;
+    font-size: 0.74rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .empty, .error {
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 16px 2px;
+  }
+  .error { color: #ff8b8b; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>File Assistant</h1>
+    <p>Ask questions across your indexed files, upload new ones, or browse what's been ingested.</p>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" id="tab-ask" type="button">Ask</button>
+    <button class="tab" id="tab-files" type="button">Files</button>
+  </div>
+
+  <!-- Ask view -->
+  <section id="view-ask">
+
+    <!-- Upload zone -->
+    <div class="upload-zone" id="drop">
+      <input type="file" id="file-input" class="hidden" />
+      <div class="drop-prompt" id="drop-prompt">
+        <strong>Drop a file here</strong> or <button class="link" id="choose-btn" type="button">choose one</button> to upload &amp; index
+      </div>
+      <div id="staged" class="hidden">
+        <div class="staged-name" id="staged-name"></div>
+        <input type="text" id="note-input" placeholder="Add a note / description (optional, searchable)" />
+        <div class="upload-actions">
+          <button class="primary" id="upload-btn" type="button">Upload &amp; index</button>
+          <button class="tab" id="upload-cancel" type="button">Cancel</button>
+        </div>
+        <div class="progress hidden" id="upload-progress"><div class="bar" id="upload-bar"></div></div>
+        <div class="upload-status" id="upload-status"></div>
+      </div>
+    </div>
+
+    <div class="ask-row">
+      <textarea id="q" placeholder="Ask something — e.g. &quot;what is mindcast&quot;, or &quot;summarize the architecture&quot;"></textarea>
+      <button class="primary" id="ask-btn" type="button">Ask</button>
+    </div>
+    <div class="spinner-wrap" id="ask-spin"><div class="spinner"></div><span>Searching…</span></div>
+    <div id="ask-results"></div>
+  </section>
+
+  <!-- Files view -->
+  <section id="view-files" class="hidden">
+    <div class="spinner-wrap" id="files-spin"><div class="spinner"></div><span>Loading files…</span></div>
+    <div id="files-results"></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- helpers -----------------------------------------------------------
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function extOf(name) {
+    return (name && name.indexOf(".") >= 0) ? name.split(".").pop() : "";
+  }
+  function fmtSize(bytes) {
+    if (bytes === undefined || bytes === null) return "";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+  function fmtDate(iso) {
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+  }
+
+  // ---- tab switching -----------------------------------------------------
+  var tabAsk = document.getElementById("tab-ask");
+  var tabFiles = document.getElementById("tab-files");
+  var viewAsk = document.getElementById("view-ask");
+  var viewFiles = document.getElementById("view-files");
+
+  tabAsk.addEventListener("click", function () {
+    tabAsk.classList.add("active"); tabFiles.classList.remove("active");
+    viewAsk.classList.remove("hidden"); viewFiles.classList.add("hidden");
+  });
+  tabFiles.addEventListener("click", function () {
+    tabFiles.classList.add("active"); tabAsk.classList.remove("active");
+    viewFiles.classList.remove("hidden"); viewAsk.classList.add("hidden");
+    loadFiles();
+  });
+
+  // ---- upload flow -------------------------------------------------------
+  var drop = document.getElementById("drop");
+  var dropPrompt = document.getElementById("drop-prompt");
+  var fileInput = document.getElementById("file-input");
+  var chooseBtn = document.getElementById("choose-btn");
+  var staged = document.getElementById("staged");
+  var stagedName = document.getElementById("staged-name");
+  var noteInput = document.getElementById("note-input");
+  var uploadBtn = document.getElementById("upload-btn");
+  var uploadCancel = document.getElementById("upload-cancel");
+  var uploadProgress = document.getElementById("upload-progress");
+  var uploadBar = document.getElementById("upload-bar");
+  var uploadStatus = document.getElementById("upload-status");
+  var stagedFile = null;
+
+  function stageFile(f) {
+    stagedFile = f;
+    clear(stagedName);
+    stagedName.appendChild(el("span", null, f.name));
+    var e = extOf(f.name);
+    if (e) stagedName.appendChild(el("span", "badge", e));
+    stagedName.appendChild(el("span", "score", fmtSize(f.size)));
+    noteInput.value = "";
+    uploadStatus.className = "upload-status";
+    uploadStatus.textContent = "";
+    uploadProgress.classList.add("hidden");
+    uploadBar.style.width = "0%";
+    dropPrompt.classList.add("hidden");
+    staged.classList.remove("hidden");
+    noteInput.focus();
+  }
+  function resetUpload() {
+    stagedFile = null;
+    fileInput.value = "";
+    staged.classList.add("hidden");
+    dropPrompt.classList.remove("hidden");
+  }
+
+  chooseBtn.addEventListener("click", function () { fileInput.click(); });
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files && fileInput.files[0]) stageFile(fileInput.files[0]);
+  });
+  uploadCancel.addEventListener("click", resetUpload);
+
+  // drag & drop
+  ["dragenter", "dragover"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("drag"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+      stageFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  uploadBtn.addEventListener("click", function () {
+    if (!stagedFile) return;
+    var form = new FormData();
+    form.append("file", stagedFile);
+    form.append("note", noteInput.value || "");
+
+    uploadBtn.disabled = true;
+    uploadCancel.disabled = true;
+    uploadStatus.className = "upload-status";
+    uploadStatus.textContent = "Uploading…";
+    uploadProgress.classList.remove("hidden");
+    uploadBar.style.width = "0%";
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/upload", true);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) {
+        var pct = Math.round((e.loaded / e.total) * 100);
+        uploadBar.style.width = pct + "%";
+        if (pct >= 100) uploadStatus.textContent = "Indexing… (embedding the file)";
+      }
+    };
+    xhr.onload = function () {
+      uploadBtn.disabled = false;
+      uploadCancel.disabled = false;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        var data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e) {}
+        uploadBar.style.width = "100%";
+        uploadStatus.className = "upload-status ok";
+        var msg = "✓ " + (data.status || "ingested") + ": " + (data.filename || stagedFile.name);
+        if (data.note) msg += "  — note saved";
+        uploadStatus.textContent = msg;
+        // reset staged state shortly after, keep the confirmation visible
+        var keepName = (data.filename || stagedFile.name);
+        setTimeout(function () {
+          resetUpload();
+          uploadStatus.className = "upload-status ok";
+          uploadStatus.textContent = "✓ Indexed " + keepName + ". It's now searchable.";
+        }, 900);
+      } else {
+        uploadStatus.className = "upload-status err";
+        var detail = xhr.responseText;
+        try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
+        uploadStatus.textContent = "Error " + xhr.status + ": " + detail;
+      }
+    };
+    xhr.onerror = function () {
+      uploadBtn.disabled = false;
+      uploadCancel.disabled = false;
+      uploadStatus.className = "upload-status err";
+      uploadStatus.textContent = "Network error during upload.";
+    };
+    xhr.send(form);
+  });
+
+  // ---- ask flow ----------------------------------------------------------
+  var qInput = document.getElementById("q");
+  var askBtn = document.getElementById("ask-btn");
+  var askSpin = document.getElementById("ask-spin");
+  var askResults = document.getElementById("ask-results");
+
+  function renderChunk(chunk) {
+    var card = el("div", "card");
+    var head = el("div", "card-head");
+    head.appendChild(el("span", "fname", chunk.filename || "(unknown)"));
+    var ft = extOf(chunk.filename) || chunk.source || "";
+    if (ft) head.appendChild(el("span", "badge", ft));
+    if (typeof chunk.score === "number") {
+      head.appendChild(el("span", "score", "score " + chunk.score.toFixed(3)));
+    }
+    card.appendChild(head);
+    if (chunk.note) card.appendChild(el("div", "note-line", "note: " + chunk.note));
+    card.appendChild(el("div", "chunk-text", chunk.text || ""));
+    return card;
+  }
+
+  function renderSources(sources) {
+    var wrap = el("div", "sources");
+    wrap.appendChild(el("span", null, "Sources: "));
+    (sources || []).forEach(function (s) {
+      wrap.appendChild(el("span", "badge", s));
+    });
+    return wrap;
+  }
+
+  function renderResponse(data) {
+    clear(askResults);
+
+    var modeLine = el("div", "mode-line");
+    modeLine.appendChild(el("span", "mode-pill", data.mode === "summarize" ? "Summarize" : "Find"));
+    modeLine.appendChild(el("span", null, data.question || ""));
+    askResults.appendChild(modeLine);
+
+    if (data.mode === "summarize") {
+      var card = el("div", "card summary-card");
+      card.appendChild(el("div", "summary-text", data.answer || ""));
+      if (data.sources && data.sources.length) card.appendChild(renderSources(data.sources));
+      askResults.appendChild(card);
+    } else {
+      var chunks = data.chunks || [];
+      if (!chunks.length) {
+        askResults.appendChild(el("div", "empty", "No matching content found."));
+        return;
+      }
+      chunks.forEach(function (c) { askResults.appendChild(renderChunk(c)); });
+    }
+  }
+
+  function ask() {
+    var question = (qInput.value || "").trim();
+    if (!question) { qInput.focus(); return; }
+    clear(askResults);
+    askBtn.disabled = true;
+    askSpin.classList.add("show");
+
+    fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question, filters: {} })
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("Server returned " + r.status);
+        return r.json();
+      })
+      .then(function (data) { renderResponse(data); })
+      .catch(function (err) {
+        clear(askResults);
+        askResults.appendChild(el("div", "error", "Error: " + err.message));
+      })
+      .finally(function () {
+        askBtn.disabled = false;
+        askSpin.classList.remove("show");
+      });
+  }
+
+  askBtn.addEventListener("click", ask);
+  qInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+
+  // ---- files flow --------------------------------------------------------
+  var filesSpin = document.getElementById("files-spin");
+  var filesResults = document.getElementById("files-results");
+
+  function renderFile(f) {
+    var card = el("div", "card");
+    var row = el("div", "file-row");
+    row.appendChild(el("span", "fname", f.filename || "(unknown)"));
+    if (f.filetype) row.appendChild(el("span", "badge", f.filetype));
+    if (f.source) {
+      var src = el("span", "score", f.source);
+      src.style.marginLeft = "auto";
+      row.appendChild(src);
+    }
+    card.appendChild(row);
+
+    var bits = [];
+    if (f.chunks !== undefined) bits.push(f.chunks + " chunk" + (f.chunks === 1 ? "" : "s"));
+    if (f.filesize !== undefined) bits.push(fmtSize(f.filesize));
+    if (f.date_ingested) bits.push("ingested " + fmtDate(f.date_ingested));
+    card.appendChild(el("div", "file-meta", bits.join("  ·  ")));
+    return card;
+  }
+
+  function loadFiles() {
+    clear(filesResults);
+    filesSpin.classList.add("show");
+
+    fetch("/files")
+      .then(function (r) {
+        if (!r.ok) throw new Error("Server returned " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        clear(filesResults);
+        var files = data.files || [];
+        var head = el("div", "mode-line");
+        head.appendChild(el("span", "mode-pill", "Files"));
+        head.appendChild(el("span", null, data.count + " document" + (data.count === 1 ? "" : "s") + " indexed"));
+        filesResults.appendChild(head);
+        if (!files.length) {
+          filesResults.appendChild(el("div", "empty", "No files indexed yet. Upload one or drop files into the watch folders."));
+          return;
+        }
+        files.forEach(function (f) { filesResults.appendChild(renderFile(f)); });
+      })
+      .catch(function (err) {
+        clear(filesResults);
+        filesResults.appendChild(el("div", "error", "Error: " + err.message));
+      })
+      .finally(function () { filesSpin.classList.remove("show"); });
+  }
+
+  // focus the input on load
+  qInput.focus();
+})();
+</script>
+</body>
+</html>

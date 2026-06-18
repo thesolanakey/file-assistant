@@ -74,6 +74,7 @@ def query_endpoint(req: QueryRequest):
                 "filename": payload.get("filename"),
                 "filepath": payload.get("filepath"),
                 "source": payload.get("source"),
+                "note": payload.get("note", ""),
                 "score": hit.score,
             }
         )
@@ -139,6 +140,7 @@ def files_endpoint():
                     "filetype": payload.get("filetype"),
                     "filesize": payload.get("filesize"),
                     "source": payload.get("source"),
+                    "note": payload.get("note", ""),
                     "date_ingested": payload.get("date_ingested"),
                     "chunks": 0,
                 },
