@@ -2,19 +2,40 @@
 #
 # The site is addressed by raw IP (46.62.202.18). Public CAs do not issue certs
 # for bare IPs, so Caddy serves HTTPS with its own internal CA (self-signed) via
-# `tls internal`. Browsers/curl will warn about the cert — use `curl -k` or trust
-# Caddy's root CA. Plain HTTP on :80 is also served (not redirected).
+# `tls internal`. Two important details for running this in Docker on a bare IP:
+#
+#   * `bind 0.0.0.0` — without this, addressing a site by a literal IP makes
+#     Caddy bind the listener to that exact IP, which does not exist inside the
+#     container (its interface is the docker-network IP). Binding 0.0.0.0 lets
+#     the published ports reach Caddy.
+#   * `default_sni` — clients connecting to an IP literal send no TLS SNI
+#     (RFC 6066), so this tells Caddy which cert to present for those handshakes.
+#
+# Browsers/curl will warn about the self-signed cert — use `curl -k` or trust
+# Caddy's root CA. Both :80 (plain HTTP) and :443 (HTTPS) are served, each behind
+# basic auth and proxied to the FastAPI container.
 
 {
 	auto_https disable_redirects
+	default_sni 46.62.202.18
 }
 
-46.62.202.18 {
-	tls internal
-
+# Shared proxy config: basic auth + reverse proxy to FastAPI.
+(authproxy) {
+	bind 0.0.0.0
 	basic_auth {
 		{$BASIC_AUTH_USER} {$BASIC_AUTH_PASSWORD}
 	}
-
 	reverse_proxy fastapi:8000
+}
+
+# HTTPS on :443 with the internal self-signed CA.
+46.62.202.18 {
+	tls internal
+	import authproxy
+}
+
+# Plain HTTP on :80 (not redirected to HTTPS).
+http://46.62.202.18 {
+	import authproxy
 }
