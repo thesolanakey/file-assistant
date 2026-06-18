@@ -140,6 +140,7 @@ def files_endpoint():
                     "filetype": payload.get("filetype"),
                     "filesize": payload.get("filesize"),
                     "source": payload.get("source"),
+                    "folder": payload.get("folder", payload.get("source")),
                     "note": payload.get("note", ""),
                     "date_ingested": payload.get("date_ingested"),
                     "chunks": 0,

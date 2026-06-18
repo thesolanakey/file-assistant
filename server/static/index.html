@@ -216,6 +216,7 @@
     font-size: 0.72rem;
     color: var(--muted);
   }
+  .folder-badge { color: var(--muted); text-transform: none; letter-spacing: 0; }
   .note-line {
     font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-style: italic;
   }
@@ -290,8 +291,8 @@
           <button class="tab" id="upload-cancel" type="button">Cancel</button>
         </div>
         <div class="progress hidden" id="upload-progress"><div class="bar" id="upload-bar"></div></div>
-        <div class="upload-status" id="upload-status"></div>
       </div>
+      <div class="upload-status" id="upload-status"></div>
     </div>
 
     <div class="ask-row">
@@ -408,6 +409,12 @@
     }
   });
 
+  function setStatusLines(cls, lines) {
+    clear(uploadStatus);
+    uploadStatus.className = "upload-status" + (cls ? " " + cls : "");
+    lines.forEach(function (t) { uploadStatus.appendChild(el("div", null, t)); });
+  }
+
   uploadBtn.addEventListener("click", function () {
     if (!stagedFile) return;
     var form = new FormData();
@@ -416,50 +423,52 @@
 
     uploadBtn.disabled = true;
     uploadCancel.disabled = true;
-    uploadStatus.className = "upload-status";
-    uploadStatus.textContent = "Uploading…";
+    setStatusLines("", ["Uploading…"]);
     uploadProgress.classList.remove("hidden");
     uploadBar.style.width = "0%";
 
+    var phaseTimer = null;
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/upload", true);
     xhr.upload.onprogress = function (e) {
       if (e.lengthComputable) {
         var pct = Math.round((e.loaded / e.total) * 100);
         uploadBar.style.width = pct + "%";
-        if (pct >= 100) uploadStatus.textContent = "Indexing… (embedding the file)";
+        if (pct >= 100) {
+          // Bytes are in. The server now derives the folder from the note,
+          // then embeds — show "organizing…" before "indexing…".
+          setStatusLines("", ["Organizing… (deciding a folder)"]);
+          if (phaseTimer) clearTimeout(phaseTimer);
+          phaseTimer = setTimeout(function () {
+            setStatusLines("", ["Indexing… (embedding the file)"]);
+          }, 900);
+        }
       }
     };
     xhr.onload = function () {
+      if (phaseTimer) clearTimeout(phaseTimer);
       uploadBtn.disabled = false;
       uploadCancel.disabled = false;
       if (xhr.status >= 200 && xhr.status < 300) {
         var data = {};
         try { data = JSON.parse(xhr.responseText); } catch (e) {}
         uploadBar.style.width = "100%";
-        uploadStatus.className = "upload-status ok";
-        var msg = "✓ " + (data.status || "ingested") + ": " + (data.filename || stagedFile.name);
-        if (data.note) msg += "  — note saved";
-        uploadStatus.textContent = msg;
-        // reset staged state shortly after, keep the confirmation visible
-        var keepName = (data.filename || stagedFile.name);
-        setTimeout(function () {
-          resetUpload();
-          uploadStatus.className = "upload-status ok";
-          uploadStatus.textContent = "✓ Indexed " + keepName + ". It's now searchable.";
-        }, 900);
+        var fname = data.filename || stagedFile.name;
+        var folder = data.folder || "documents";
+        setStatusLines("ok", ["✓ Indexed " + fname, "Saved to → /" + folder]);
+        // Reset the staged form but keep the confirmation (it lives outside it).
+        setTimeout(resetUpload, 1200);
       } else {
-        uploadStatus.className = "upload-status err";
         var detail = xhr.responseText;
         try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
-        uploadStatus.textContent = "Error " + xhr.status + ": " + detail;
+        setStatusLines("err", ["Error " + xhr.status + ": " + detail]);
       }
     };
     xhr.onerror = function () {
+      if (phaseTimer) clearTimeout(phaseTimer);
       uploadBtn.disabled = false;
       uploadCancel.disabled = false;
-      uploadStatus.className = "upload-status err";
-      uploadStatus.textContent = "Network error during upload.";
+      setStatusLines("err", ["Network error during upload."]);
     };
     xhr.send(form);
   });
@@ -558,10 +567,11 @@
     var row = el("div", "file-row");
     row.appendChild(el("span", "fname", f.filename || "(unknown)"));
     if (f.filetype) row.appendChild(el("span", "badge", f.filetype));
-    if (f.source) {
-      var src = el("span", "score", f.source);
-      src.style.marginLeft = "auto";
-      row.appendChild(src);
+    var folder = f.folder || f.source;
+    if (folder) {
+      var fb = el("span", "badge folder-badge", "📁 " + folder);
+      fb.style.marginLeft = "auto";
+      row.appendChild(fb);
     }
     card.appendChild(row);
 

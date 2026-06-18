@@ -10,6 +10,7 @@ Exposes:
 from __future__ import annotations
 
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -89,6 +90,57 @@ def _source_for(path: str) -> str:
     return "external"
 
 
+_FOLDER_MODEL = "claude-haiku-4-5-20251001"
+_DEFAULT_FOLDER = "documents"
+
+
+def _sanitize_folder(name: str) -> str:
+    """lowercase, spaces->hyphens, alphanumeric+hyphens only, max 20 chars."""
+    name = (name or "").strip().lower()
+    name = name.replace(" ", "-")
+    name = re.sub(r"[^a-z0-9-]", "", name)   # drop anything not alnum/hyphen
+    name = re.sub(r"-+", "-", name).strip("-")
+    name = name[:20].strip("-")
+    return name or _DEFAULT_FOLDER
+
+
+def detect_folder(note: str) -> str:
+    """Derive a topic folder name from the user's note via Claude Haiku.
+
+    Empty note or any failure -> the default `documents` folder. The chosen
+    folder is created under WATCH_DIR if it does not already exist (existing
+    folders are simply reused).
+    """
+    note = (note or "").strip()
+    folder = _DEFAULT_FOLDER
+
+    if note:
+        try:
+            from server import generate
+
+            client = generate._get_claude_client()
+            prompt = (
+                "Given this note about a file, return only a single short folder "
+                "name (lowercase, no spaces, use hyphens). Examples: 'quarterly "
+                "report from accountant' → finance, 'notes from team standup' "
+                "→ meetings, 'my workout plan' → health. Note: " + note
+            )
+            resp = client.messages.create(
+                model=_FOLDER_MODEL,
+                max_tokens=20,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = "".join(b.text for b in resp.content if b.type == "text")
+            folder = _sanitize_folder(raw)
+        except Exception as exc:  # noqa: BLE001 - never fail an upload on this
+            print(f"[detect_folder] error, defaulting to {_DEFAULT_FOLDER}: {exc}", flush=True)
+            folder = _DEFAULT_FOLDER
+
+    # Create (or reuse) the folder under WATCH_DIR. Never write to the root.
+    os.makedirs(os.path.join(settings.WATCH_DIR, folder), exist_ok=True)
+    return folder
+
+
 def _already_ingested(filename: str, filesize: int) -> bool:
     """Dedup check: is a point with this filename+size already stored?"""
     client = get_qdrant()
@@ -110,12 +162,13 @@ def _already_ingested(filename: str, filesize: int) -> bool:
     return len(points) > 0
 
 
-def ingest_path(path: str, note: str | None = None) -> dict:
+def ingest_path(path: str, note: str | None = None, folder: str | None = None) -> dict:
     """Parse, chunk, embed, and store a single file. Returns a status dict.
 
     If ``note`` is provided it is embedded as its own searchable chunk (so a
     query about the file's description retrieves it) and stored on every point's
-    payload as ``note``.
+    payload as ``note``. ``folder`` is stored on the payload; if omitted it is
+    derived from the file's location under WATCH_DIR.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -144,6 +197,9 @@ def ingest_path(path: str, note: str | None = None) -> dict:
     filetype = os.path.splitext(filename)[1].lower().lstrip(".") or "unknown"
     date_ingested = datetime.now(timezone.utc).isoformat()
     source = _source_for(path)
+    # Folder defaults to the file's top-level location under WATCH_DIR, so the
+    # watcher and uploads agree without the caller having to pass it.
+    folder = folder or source
 
     points = []
     for chunk, vector in zip(chunks, vectors):
@@ -159,13 +215,14 @@ def ingest_path(path: str, note: str | None = None) -> dict:
                     "filesize": filesize,
                     "date_ingested": date_ingested,
                     "source": source,
+                    "folder": folder,
                     "note": note,
                 },
             )
         )
 
     get_qdrant().upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
-    return {"status": "ingested", "path": path, "chunks": len(points), "note": note}
+    return {"status": "ingested", "path": path, "chunks": len(points), "note": note, "folder": folder}
 
 
 # --- File watcher -----------------------------------------------------------
@@ -266,7 +323,14 @@ async def upload_endpoint(
         raise HTTPException(status_code=400, detail="no filename provided")
 
     filename = os.path.basename(file.filename)
-    dest_dir = os.path.join(settings.WATCH_DIR, "documents")
+    note_clean = (note or "").strip()
+
+    # Derive the topic folder from the note (Claude call) — run off the loop.
+    # detect_folder also creates the folder under WATCH_DIR. The watch root is
+    # never written to directly; a subfolder is always used.
+    folder = await run_in_threadpool(detect_folder, note_clean)
+
+    dest_dir = os.path.join(settings.WATCH_DIR, folder)
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, filename)
     abspath = os.path.abspath(dest)
@@ -278,7 +342,7 @@ async def upload_endpoint(
         with open(dest, "wb") as f:
             f.write(contents)
         # Embedding is CPU-bound — run it off the event loop.
-        result = await run_in_threadpool(ingest_path, dest, note)
+        result = await run_in_threadpool(ingest_path, dest, note_clean, folder)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
@@ -287,6 +351,7 @@ async def upload_endpoint(
     return {
         "status": result.get("status", "ingested"),
         "filename": filename,
-        "note": (note or "").strip(),
+        "note": note_clean,
+        "folder": folder,
         "detail": result,
     }
