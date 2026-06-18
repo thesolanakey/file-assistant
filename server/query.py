@@ -12,17 +12,22 @@ from qdrant_client.http import models as qmodels
 
 from config import settings
 from server import embed, generate
+from server import ingest
 from server.ingest import get_qdrant
 
 router = APIRouter()
 
 TOP_K = 5
+# If the best already-indexed hit scores below this, we look for pending
+# registry files that might be more relevant and embed them on demand.
+_CONFIDENCE_THRESHOLD = 0.45
 _SUMMARIZE_KEYWORDS = ("summarize", "explain", "overview", "tldr")
 
 
 class QueryRequest(BaseModel):
     question: str
     filters: dict = Field(default_factory=dict)
+    folder_ids: list[str] = Field(default_factory=list)
 
 
 def _detect_mode(question: str) -> str:
@@ -32,23 +37,28 @@ def _detect_mode(question: str) -> str:
     return "find"
 
 
-def _build_filter(filters: dict) -> qmodels.Filter | None:
-    """Translate a simple {field: value} dict into a Qdrant filter."""
-    if not filters:
-        return None
+def _build_filter(filters: dict, folder_topics: set[str] | None = None) -> qmodels.Filter | None:
+    """Translate a simple {field: value} dict (+ optional folder scope) into a
+    Qdrant filter."""
     conditions = [
         qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value))
-        for key, value in filters.items()
+        for key, value in (filters or {}).items()
     ]
+    if folder_topics:
+        conditions.append(
+            qmodels.FieldCondition(key="folder", match=qmodels.MatchAny(any=list(folder_topics)))
+        )
+    if not conditions:
+        return None
     return qmodels.Filter(must=conditions)
 
 
-def _search(question: str, filters: dict):
+def _search(question: str, filters: dict, folder_topics: set[str] | None = None):
     vector = embed.get_embedding(question, is_query=True)
     return get_qdrant().search(
         collection_name=settings.QDRANT_COLLECTION,
         query_vector=vector,
-        query_filter=_build_filter(filters),
+        query_filter=_build_filter(filters, folder_topics),
         limit=TOP_K,
         with_payload=True,
     )
@@ -60,8 +70,24 @@ def query_endpoint(req: QueryRequest):
         raise HTTPException(status_code=400, detail="question must not be empty")
 
     mode = _detect_mode(req.question)
+    folder_ids = req.folder_ids or []
+    # Map requested folder ids -> their topics so we can scope the vector search.
+    folder_topics = ingest._folder_topics(folder_ids) if folder_ids else set()
+
+    embedded_now = 0
     try:
-        hits = _search(req.question, req.filters)
+        # Step 1: search what's already indexed (scoped if folders requested).
+        hits = _search(req.question, req.filters, folder_topics)
+        top_score = hits[0].score if hits else 0.0
+
+        # Step 2: if scope was requested, or confidence is low, pull in matching
+        # pending files from the registry and embed them on demand.
+        if folder_ids or top_score < _CONFIDENCE_THRESHOLD:
+            info = ingest.embed_on_demand(req.question, folder_ids or None)
+            embedded_now = info.get("indexed", 0)
+            if embedded_now:
+                # Step 6: re-search now that new content is indexed.
+                hits = _search(req.question, req.filters, folder_topics)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"search failed: {exc}")
 
@@ -85,6 +111,7 @@ def query_endpoint(req: QueryRequest):
             "question": req.question,
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "chunks": chunks,
+            "embedded_on_demand": embedded_now,
         }
 
     # summarize mode -> hand the retrieved context to the generation layer.
@@ -109,6 +136,7 @@ def query_endpoint(req: QueryRequest):
         "question": req.question,
         "answer": answer,
         "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
+        "embedded_on_demand": embedded_now,
     }
 
 

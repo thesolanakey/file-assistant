@@ -20,8 +20,9 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create the collection up front so the watcher and queries have it ready.
+    # Create the collections up front so the watcher and queries have them ready.
     ingest.ensure_collection()
+    ingest.ensure_registry_collection()
     ingest.start_watcher()
     yield
 

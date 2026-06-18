@@ -260,6 +260,60 @@
   }
   .error { color: #ff8b8b; }
   .hidden { display: none; }
+
+  /* Scope selector */
+  .scope-line {
+    font-size: 0.82rem; color: var(--muted);
+    margin-bottom: 10px; display: flex; gap: 8px; align-items: center;
+  }
+  .scope-picker {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+  }
+  .scope-picker .pick {
+    display: flex; align-items: center; gap: 8px; padding: 5px 0;
+    font-size: 0.88rem;
+  }
+  .scope-picker .pick input { width: 16px; height: 16px; }
+  .scope-picker .pick .muted { color: var(--muted); font-size: 0.78rem; }
+  .scope-actions { margin-top: 8px; display: flex; gap: 8px; }
+
+  /* Auto-suggest banner */
+  .suggest {
+    background: var(--panel-2); border: 1px solid var(--accent);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+    font-size: 0.88rem; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .suggest .sg-actions { margin-left: auto; display: flex; gap: 6px; }
+  .btn-sm {
+    border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); border-radius: 8px; padding: 4px 12px;
+    font-size: 0.82rem; cursor: pointer;
+  }
+  .btn-sm.yes { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
+
+  /* Folder upload bits */
+  .hint { font-size: 0.76rem; color: var(--muted); margin-top: 6px; }
+  .bubble {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 12px 12px 12px 4px; padding: 9px 12px; margin: 4px 0 10px;
+    font-size: 0.9rem; display: inline-block;
+  }
+  .status-badge {
+    display: inline-block; font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.4px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
+  }
+  .st-pending { background: #3a2f1d; color: #e0b667; }
+  .st-partial { background: #1d2f3a; color: #67b6e0; }
+  .st-indexed { background: #1d3a2a; color: var(--ok); }
+  .folder-card-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .folder-card-row .fname { flex: 0 1 auto; }
+  .trash {
+    margin-left: auto; background: none; border: none; cursor: pointer;
+    color: var(--muted); font-size: 1rem;
+  }
+  .trash:hover { color: #ff8b8b; }
+  .fchk { width: 16px; height: 16px; }
 </style>
 </head>
 <body>
@@ -271,6 +325,7 @@
 
   <div class="tabs">
     <button class="tab active" id="tab-ask" type="button">Ask</button>
+    <button class="tab" id="tab-folders" type="button">Folders</button>
     <button class="tab" id="tab-files" type="button">Files</button>
   </div>
 
@@ -295,12 +350,47 @@
       <div class="upload-status" id="upload-status"></div>
     </div>
 
+    <!-- Search scope -->
+    <div class="scope-line">
+      <span id="scope-label">Searching: All indexed files</span>
+      <button class="link" id="scope-change" type="button">change</button>
+    </div>
+    <div id="scope-picker" class="scope-picker hidden"></div>
+
+    <!-- Auto-suggestion when an unindexed folder matches the question -->
+    <div id="suggest" class="suggest hidden"></div>
+
     <div class="ask-row">
       <textarea id="q" placeholder="Ask something — e.g. &quot;what is mindcast&quot;, or &quot;summarize the architecture&quot;"></textarea>
       <button class="primary" id="ask-btn" type="button">Ask</button>
     </div>
     <div class="spinner-wrap" id="ask-spin"><div class="spinner"></div><span>Searching…</span></div>
     <div id="ask-results"></div>
+  </section>
+
+  <!-- Folders view -->
+  <section id="view-folders" class="hidden">
+    <div class="upload-zone" id="folder-drop">
+      <input type="file" id="folder-input" class="hidden" webkitdirectory directory multiple />
+      <div class="drop-prompt" id="folder-prompt">
+        <strong>Drop a folder here</strong> or <button class="link" id="folder-choose" type="button">choose a folder</button> to register
+        <div class="hint">Files are registered instantly and indexed only when you search them.</div>
+      </div>
+      <div id="folder-staged" class="hidden">
+        <div class="staged-name" id="folder-staged-name"></div>
+        <div class="bubble">What is this folder about?</div>
+        <input type="text" id="folder-note" placeholder="Describe it naturally — e.g. &quot;my mindcast project source code&quot;" />
+        <div class="upload-actions">
+          <button class="primary" id="folder-register" type="button">Register folder</button>
+          <button class="tab" id="folder-cancel" type="button">Cancel</button>
+        </div>
+        <div class="progress hidden" id="folder-progress"><div class="bar" id="folder-bar"></div></div>
+      </div>
+      <div class="upload-status" id="folder-status"></div>
+    </div>
+
+    <div class="spinner-wrap" id="folders-spin"><div class="spinner"></div><span>Loading folders…</span></div>
+    <div id="folders-list"></div>
   </section>
 
   <!-- Files view -->
@@ -337,20 +427,31 @@
   }
 
   // ---- tab switching -----------------------------------------------------
-  var tabAsk = document.getElementById("tab-ask");
-  var tabFiles = document.getElementById("tab-files");
-  var viewAsk = document.getElementById("view-ask");
-  var viewFiles = document.getElementById("view-files");
+  var TABS = {
+    ask:     { tab: "tab-ask",     view: "view-ask" },
+    folders: { tab: "tab-folders", view: "view-folders" },
+    files:   { tab: "tab-files",   view: "view-files" }
+  };
+  function showView(name) {
+    Object.keys(TABS).forEach(function (k) {
+      document.getElementById(TABS[k].tab).classList.toggle("active", k === name);
+      document.getElementById(TABS[k].view).classList.toggle("hidden", k !== name);
+    });
+    if (name === "files") loadFiles();
+    if (name === "folders") loadFolders();
+  }
+  document.getElementById("tab-ask").addEventListener("click", function () { showView("ask"); });
+  document.getElementById("tab-folders").addEventListener("click", function () { showView("folders"); });
+  document.getElementById("tab-files").addEventListener("click", function () { showView("files"); });
 
-  tabAsk.addEventListener("click", function () {
-    tabAsk.classList.add("active"); tabFiles.classList.remove("active");
-    viewAsk.classList.remove("hidden"); viewFiles.classList.add("hidden");
-  });
-  tabFiles.addEventListener("click", function () {
-    tabFiles.classList.add("active"); tabAsk.classList.remove("active");
-    viewFiles.classList.remove("hidden"); viewAsk.classList.add("hidden");
-    loadFiles();
-  });
+  // ---- shared folder state -----------------------------------------------
+  var selectedFolderIds = {};      // id -> true (folders scoped into search)
+  var foldersCache = [];           // last /folders payload
+  var suggestDismissed = {};       // topic -> true (don't re-suggest)
+
+  function selectedIdList() {
+    return Object.keys(selectedFolderIds).filter(function (id) { return selectedFolderIds[id]; });
+  }
 
   // ---- upload flow -------------------------------------------------------
   var drop = document.getElementById("drop");
@@ -511,6 +612,10 @@
     modeLine.appendChild(el("span", null, data.question || ""));
     askResults.appendChild(modeLine);
 
+    if (data.embedded_on_demand) {
+      askResults.appendChild(el("div", "mode-line", "⚡ Indexed " + data.embedded_on_demand + " pending file(s) on demand for this search."));
+    }
+
     if (data.mode === "summarize") {
       var card = el("div", "card summary-card");
       card.appendChild(el("div", "summary-text", data.answer || ""));
@@ -532,11 +637,12 @@
     clear(askResults);
     askBtn.disabled = true;
     askSpin.classList.add("show");
+    checkSuggest(question);
 
     fetch("/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: question, filters: {} })
+      body: JSON.stringify({ question: question, filters: {}, folder_ids: selectedIdList() })
     })
       .then(function (r) {
         if (!r.ok) throw new Error("Server returned " + r.status);
@@ -611,6 +717,268 @@
       })
       .finally(function () { filesSpin.classList.remove("show"); });
   }
+
+  // ---- search scope picker -----------------------------------------------
+  var scopeLabel = document.getElementById("scope-label");
+  var scopeChange = document.getElementById("scope-change");
+  var scopePicker = document.getElementById("scope-picker");
+
+  function refreshScopeLabel() {
+    var ids = selectedIdList();
+    if (!ids.length) { scopeLabel.textContent = "Searching: All indexed files"; return; }
+    var topics = ids.map(function (id) {
+      var f = foldersCache.filter(function (x) { return x.id === id; })[0];
+      return f ? f.topic : id;
+    });
+    scopeLabel.textContent = "Searching: " + ids.length + " folder" + (ids.length === 1 ? "" : "s") +
+      " (" + topics.join(", ") + ")";
+  }
+
+  function renderScopePicker() {
+    clear(scopePicker);
+    if (!foldersCache.length) {
+      scopePicker.appendChild(el("div", "muted", "No registered folders yet. Add one in the Folders tab."));
+    } else {
+      foldersCache.forEach(function (f) {
+        var row = el("label", "pick");
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!selectedFolderIds[f.id];
+        cb.addEventListener("change", function () {
+          selectedFolderIds[f.id] = cb.checked; refreshScopeLabel();
+        });
+        row.appendChild(cb);
+        row.appendChild(el("span", null, "📁 " + (f.topic || "folder")));
+        row.appendChild(el("span", "muted", f.indexed_count + "/" + f.file_count + " indexed · " + f.status));
+        scopePicker.appendChild(row);
+      });
+    }
+    var actions = el("div", "scope-actions");
+    var done = el("button", "btn-sm", "Done");
+    done.addEventListener("click", function () { scopePicker.classList.add("hidden"); });
+    var clearBtn = el("button", "btn-sm", "Clear (search all)");
+    clearBtn.addEventListener("click", function () {
+      selectedFolderIds = {}; refreshScopeLabel(); renderScopePicker();
+    });
+    actions.appendChild(done); actions.appendChild(clearBtn);
+    scopePicker.appendChild(actions);
+  }
+
+  scopeChange.addEventListener("click", function () {
+    if (scopePicker.classList.contains("hidden")) {
+      loadFolders(function () { renderScopePicker(); scopePicker.classList.remove("hidden"); });
+    } else {
+      scopePicker.classList.add("hidden");
+    }
+  });
+
+  // ---- auto-suggest unindexed folders ------------------------------------
+  var suggestBox = document.getElementById("suggest");
+  function tokens(s) { return (s || "").toLowerCase().match(/[a-z0-9]+/g) || []; }
+  function checkSuggest(question) {
+    suggestBox.classList.add("hidden"); clear(suggestBox);
+    var qt = {}; tokens(question).forEach(function (t) { qt[t] = true; });
+    var match = null;
+    foldersCache.forEach(function (f) {
+      if (match || f.status === "fully-indexed") return;
+      if (selectedFolderIds[f.id] || suggestDismissed[f.id]) return;
+      var ht = tokens((f.topic || "") + " " + (f.note || ""));
+      for (var i = 0; i < ht.length; i++) { if (qt[ht[i]]) { match = f; break; } }
+    });
+    if (!match) return;
+    suggestBox.appendChild(el("span", null,
+      "💡 You have an unindexed folder matching \"" + (match.topic || "") + "\" — include it?"));
+    var actions = el("span", "sg-actions");
+    var yes = el("button", "btn-sm yes", "Yes");
+    var no = el("button", "btn-sm", "No");
+    yes.addEventListener("click", function () {
+      selectedFolderIds[match.id] = true; refreshScopeLabel();
+      suggestBox.classList.add("hidden"); ask();
+    });
+    no.addEventListener("click", function () {
+      suggestDismissed[match.id] = true; suggestBox.classList.add("hidden");
+    });
+    actions.appendChild(yes); actions.appendChild(no);
+    suggestBox.appendChild(actions);
+    suggestBox.classList.remove("hidden");
+  }
+
+  // ---- folders tab -------------------------------------------------------
+  var folderDrop = document.getElementById("folder-drop");
+  var folderPrompt = document.getElementById("folder-prompt");
+  var folderInput = document.getElementById("folder-input");
+  var folderChoose = document.getElementById("folder-choose");
+  var folderStaged = document.getElementById("folder-staged");
+  var folderStagedName = document.getElementById("folder-staged-name");
+  var folderNote = document.getElementById("folder-note");
+  var folderRegister = document.getElementById("folder-register");
+  var folderCancel = document.getElementById("folder-cancel");
+  var folderProgress = document.getElementById("folder-progress");
+  var folderBar = document.getElementById("folder-bar");
+  var folderStatus = document.getElementById("folder-status");
+  var foldersSpin = document.getElementById("folders-spin");
+  var foldersList = document.getElementById("folders-list");
+  var stagedFiles = null;
+
+  function stageFolder(fileList) {
+    stagedFiles = fileList;
+    var top = "";
+    if (fileList.length && fileList[0].webkitRelativePath) top = fileList[0].webkitRelativePath.split("/")[0];
+    clear(folderStagedName);
+    folderStagedName.appendChild(el("span", null,
+      (top || "folder") + " — " + fileList.length + " file" + (fileList.length === 1 ? "" : "s")));
+    folderNote.value = "";
+    clear(folderStatus); folderStatus.className = "upload-status";
+    folderProgress.classList.add("hidden"); folderBar.style.width = "0%";
+    folderPrompt.classList.add("hidden");
+    folderStaged.classList.remove("hidden");
+    folderNote.focus();
+  }
+  function resetFolderUpload() {
+    stagedFiles = null; folderInput.value = "";
+    folderStaged.classList.add("hidden"); folderPrompt.classList.remove("hidden");
+  }
+
+  folderChoose.addEventListener("click", function () { folderInput.click(); });
+  folderInput.addEventListener("change", function () {
+    if (folderInput.files && folderInput.files.length) stageFolder(folderInput.files);
+  });
+  folderCancel.addEventListener("click", resetFolderUpload);
+
+  ["dragenter", "dragover"].forEach(function (ev) {
+    folderDrop.addEventListener(ev, function (e) { e.preventDefault(); folderDrop.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    folderDrop.addEventListener(ev, function (e) { e.preventDefault(); folderDrop.classList.remove("drag"); });
+  });
+  folderDrop.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      stageFolder(e.dataTransfer.files);
+    }
+  });
+
+  folderRegister.addEventListener("click", function () {
+    if (!stagedFiles || !stagedFiles.length) return;
+    var form = new FormData();
+    for (var i = 0; i < stagedFiles.length; i++) {
+      var f = stagedFiles[i];
+      form.append("files", f, f.webkitRelativePath || f.name);
+    }
+    form.append("note", folderNote.value || "");
+
+    folderRegister.disabled = true; folderCancel.disabled = true;
+    clear(folderStatus); folderStatus.className = "upload-status";
+    folderStatus.appendChild(el("div", null, "Uploading folder…"));
+    folderProgress.classList.remove("hidden"); folderBar.style.width = "0%";
+
+    var phase = null;
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/register_folder", true);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) {
+        var pct = Math.round((e.loaded / e.total) * 100);
+        folderBar.style.width = pct + "%";
+        if (pct >= 100) {
+          clear(folderStatus); folderStatus.appendChild(el("div", null, "Organizing… (deciding a topic)"));
+          if (phase) clearTimeout(phase);
+          phase = setTimeout(function () {
+            clear(folderStatus); folderStatus.appendChild(el("div", null, "Registering files…"));
+          }, 800);
+        }
+      }
+    };
+    xhr.onload = function () {
+      if (phase) clearTimeout(phase);
+      folderRegister.disabled = false; folderCancel.disabled = false;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        var d = {}; try { d = JSON.parse(xhr.responseText); } catch (e) {}
+        folderBar.style.width = "100%";
+        clear(folderStatus); folderStatus.className = "upload-status ok";
+        folderStatus.appendChild(el("div", null,
+          "📁 Registered " + (d.registered || 0) + " files → topic: " + (d.topic || "documents") + " (not indexed yet)"));
+        if (d.duplicates_skipped) folderStatus.appendChild(el("div", null, d.duplicates_skipped + " duplicate(s) skipped"));
+        setTimeout(resetFolderUpload, 1200);
+        loadFolders();
+      } else {
+        var detail = xhr.responseText; try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
+        clear(folderStatus); folderStatus.className = "upload-status err";
+        folderStatus.appendChild(el("div", null, "Error " + xhr.status + ": " + detail));
+      }
+    };
+    xhr.onerror = function () {
+      if (phase) clearTimeout(phase);
+      folderRegister.disabled = false; folderCancel.disabled = false;
+      clear(folderStatus); folderStatus.className = "upload-status err";
+      folderStatus.appendChild(el("div", null, "Network error during folder registration."));
+    };
+    xhr.send(form);
+  });
+
+  function statusBadge(status) {
+    var map = {
+      "pending": ["st-pending", "pending"],
+      "partially-indexed": ["st-partial", "partially indexed"],
+      "fully-indexed": ["st-indexed", "fully indexed"]
+    };
+    var m = map[status] || ["st-pending", status || "pending"];
+    return el("span", "status-badge " + m[0], m[1]);
+  }
+
+  function renderFolder(f) {
+    var card = el("div", "card");
+    var row = el("div", "folder-card-row");
+    var cb = document.createElement("input");
+    cb.type = "checkbox"; cb.className = "fchk";
+    cb.checked = !!selectedFolderIds[f.id];
+    cb.title = "Include in search";
+    cb.addEventListener("change", function () { selectedFolderIds[f.id] = cb.checked; refreshScopeLabel(); });
+    row.appendChild(cb);
+    row.appendChild(el("span", "fname", "📁 " + (f.topic || "folder")));
+    row.appendChild(statusBadge(f.status));
+    var trash = el("button", "trash", "🗑");
+    trash.title = "Remove from registry (keeps files)";
+    trash.addEventListener("click", function () {
+      trash.disabled = true;
+      fetch("/folders/" + encodeURIComponent(f.id), { method: "DELETE" })
+        .then(function () { delete selectedFolderIds[f.id]; refreshScopeLabel(); loadFolders(); });
+    });
+    row.appendChild(trash);
+    card.appendChild(row);
+    var bits = [f.indexed_count + "/" + f.file_count + " files indexed"];
+    if (f.note) bits.push("note: " + f.note);
+    if (f.date_registered) bits.push("registered " + f.date_registered);
+    card.appendChild(el("div", "file-meta", bits.join("  ·  ")));
+    return card;
+  }
+
+  function loadFolders(cb) {
+    foldersSpin.classList.add("show");
+    fetch("/folders")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        foldersCache = data.folders || [];
+        clear(foldersList);
+        var head = el("div", "mode-line");
+        head.appendChild(el("span", "mode-pill", "Folders"));
+        head.appendChild(el("span", null, data.count + " folder" + (data.count === 1 ? "" : "s") + " registered"));
+        foldersList.appendChild(head);
+        if (!foldersCache.length) {
+          foldersList.appendChild(el("div", "empty", "No folders registered yet. Drop a folder above to register it."));
+        } else {
+          foldersCache.forEach(function (f) { foldersList.appendChild(renderFolder(f)); });
+        }
+        refreshScopeLabel();
+        if (cb) cb();
+      })
+      .catch(function (err) {
+        clear(foldersList);
+        foldersList.appendChild(el("div", "error", "Error: " + err.message));
+      })
+      .finally(function () { foldersSpin.classList.remove("show"); });
+  }
+
+  // preload folders so scope + suggestions work from the first question
+  loadFolders();
 
   // focus the input on load
   qInput.focus();

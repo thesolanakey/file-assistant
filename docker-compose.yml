@@ -21,6 +21,7 @@ services:
       - "8000:8000"
     volumes:
       - ./watch:/app/watch
+      - ./registered:/app/registered
     depends_on:
       - qdrant
     networks:

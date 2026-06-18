@@ -35,6 +35,12 @@ if GENERATION_BACKEND not in _ALLOWED_BACKENDS:
 QDRANT_HOST: str = _get("QDRANT_HOST", "qdrant")
 QDRANT_PORT: int = int(_get("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "files")
+# Registry of registered folders/files for lazy (on-demand) indexing.
+QDRANT_REGISTRY_COLLECTION: str = os.getenv("QDRANT_REGISTRY_COLLECTION", "registry")
+
+# Lazily-registered folder uploads land here — deliberately NOT under WATCH_DIR
+# so the eager file watcher never embeds them. They are embedded on demand.
+REGISTERED_DIR: str = os.getenv("REGISTERED_DIR", "/app/registered")
 
 # --- Embeddings -------------------------------------------------------------
 EMBED_MODEL: str = _get("EMBED_MODEL", "nomic-ai/nomic-embed-text-v1")
