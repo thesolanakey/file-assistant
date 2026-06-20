@@ -22,6 +22,11 @@ services:
     volumes:
       - ./watch:/app/watch
       - ./registered:/app/registered
+      - ./data:/app/data
+    # Lets the container reach an Ollama server running on the Docker host via
+    # http://host.docker.internal:11434 (Linux needs this mapping explicitly).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - qdrant
     networks:

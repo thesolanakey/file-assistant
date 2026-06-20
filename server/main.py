@@ -13,13 +13,15 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from server import ingest, query
+from server import db, ingest, memory, modes, query
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize SQLite (conversation memory + persisted mode) before serving.
+    db.init_db()
     # Create the collections up front so the watcher and queries have them ready.
     ingest.ensure_collection()
     ingest.ensure_registry_collection()
@@ -33,11 +35,17 @@ app = FastAPI(title="RAG File Assistant", lifespan=lifespan)
 # precedence over the StaticFiles handler at "/".
 app.include_router(ingest.router)
 app.include_router(query.router)
+app.include_router(modes.router)
+app.include_router(memory.router)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "backend": settings.GENERATION_BACKEND}
+    return {
+        "status": "ok",
+        "backend": settings.GENERATION_BACKEND,
+        "mode": modes.get_mode(),
+    }
 
 
 # Web UI: serve server/static/index.html at "/" (html=True). This mount is added

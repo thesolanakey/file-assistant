@@ -14,3 +14,5 @@ watch/code/*
 venv/
 registered/*
 !registered/**/.gitkeep
+data/*
+!data/.gitkeep

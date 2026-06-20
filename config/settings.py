@@ -24,6 +24,14 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 GENERATION_BACKEND: str = _get("GENERATION_BACKEND", "claude").strip().lower()
 CLAUDE_MODEL: str = _get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
+# Ollama (local model) backend. Used when GENERATION_BACKEND=ollama; if the
+# Ollama server is unreachable, generation falls back to Claude automatically.
+# In Docker, host.docker.internal resolves to the host (see docker-compose
+# extra_hosts), so an Ollama installed on the host works without code changes.
+OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3")
+OLLAMA_TIMEOUT: float = float(os.getenv("OLLAMA_TIMEOUT", "60"))
+
 _ALLOWED_BACKENDS = {"claude", "ollama"}
 if GENERATION_BACKEND not in _ALLOWED_BACKENDS:
     raise ValueError(
@@ -45,6 +53,22 @@ REGISTERED_DIR: str = os.getenv("REGISTERED_DIR", "/app/registered")
 # --- Embeddings -------------------------------------------------------------
 EMBED_MODEL: str = _get("EMBED_MODEL", "nomic-ai/nomic-embed-text-v1")
 EMBED_DIM: int = int(os.getenv("EMBED_DIM", "768"))
+
+# --- Operational mode -------------------------------------------------------
+# Named runtime modes for the assistant. These are independent of the
+# generation backend and of the query intent (find/summarize). The active mode
+# is persisted to SQLite (see server/modes.py) so it survives restarts; this
+# value is only the fallback used the very first time, before anything is saved.
+ALLOWED_MODES = {"local", "hetzner"}
+DEFAULT_MODE: str = _get("DEFAULT_MODE", "local").strip().lower()
+if DEFAULT_MODE not in ALLOWED_MODES:
+    raise ValueError(
+        f"DEFAULT_MODE must be one of {sorted(ALLOWED_MODES)}, got {DEFAULT_MODE!r}"
+    )
+
+# --- Persistence (SQLite: conversation memory + persisted mode) -------------
+DATA_DIR: str = os.getenv("DATA_DIR", "/app/data")
+DB_PATH: str = os.getenv("DB_PATH", os.path.join(DATA_DIR, "conversation.db"))
 
 # --- Server -----------------------------------------------------------------
 SERVER_HOST: str = _get("SERVER_HOST", "0.0.0.0")

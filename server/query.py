@@ -11,13 +11,15 @@ from pydantic import BaseModel, Field
 from qdrant_client.http import models as qmodels
 
 from config import settings
-from server import embed, generate
+from server import embed, generate, memory, modes
 from server import ingest
 from server.ingest import get_qdrant
 
 router = APIRouter()
 
 TOP_K = 5
+# How many prior messages to inject into the generation prompt as history.
+HISTORY_LIMIT = 20
 # If the best already-indexed hit scores below this, we look for pending
 # registry files that might be more relevant and embed them on demand.
 _CONFIDENCE_THRESHOLD = 0.45
@@ -64,10 +66,30 @@ def _search(question: str, filters: dict, folder_topics: set[str] | None = None)
     )
 
 
+def _assistant_content(response: dict) -> str:
+    """Text to persist as the assistant's turn for a /query response.
+
+    summarize mode has a natural-language ``answer``; find mode does not, so we
+    record a concise description of what was returned.
+    """
+    if "answer" in response:
+        return response["answer"]
+    sources = response.get("sources") or []
+    n = len(response.get("chunks", []))
+    return f"[find] {n} chunk(s) from: {', '.join(sources) if sources else 'none'}"
+
+
 @router.post("/query")
 def query_endpoint(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
+
+    # Active operational mode (local/hetzner) is recorded with every message.
+    active_mode = modes.get_mode()
+    # Snapshot prior history BEFORE logging the current question, so generation
+    # sees "conversation so far" without the current turn duplicated in it.
+    history = memory.get_messages(limit=HISTORY_LIMIT)
+    memory.add_message("user", req.question, active_mode)
 
     mode = _detect_mode(req.question)
     folder_ids = req.folder_ids or []
@@ -106,38 +128,47 @@ def query_endpoint(req: QueryRequest):
         )
 
     if mode == "find":
-        return {
+        response = {
             "mode": "find",
             "question": req.question,
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "chunks": chunks,
             "embedded_on_demand": embedded_now,
+            # find mode is pure retrieval — no LLM produced this answer.
+            "backend": "retrieval",
         }
-
-    # summarize mode -> hand the retrieved context to the generation layer.
-    if not chunks:
-        return {
+    elif not chunks:
+        # summarize mode, but nothing relevant was retrieved.
+        response = {
             "mode": "summarize",
             "question": req.question,
             "answer": "No relevant content was found in the indexed files.",
             "sources": [],
+            "backend": "retrieval",
+        }
+    else:
+        # summarize mode -> hand the retrieved context to the generation layer,
+        # with the active personality (mode) and recent conversation history.
+        context = "\n\n---\n\n".join(
+            f"[{c['filename']}]\n{c['text']}" for c in chunks
+        )
+        try:
+            result = generate.generate(
+                req.question, context, mode=active_mode, history=history
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
+        response = {
+            "mode": "summarize",
+            "question": req.question,
+            "answer": result["answer"],
+            "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
+            "embedded_on_demand": embedded_now,
+            "backend": result["backend"],
         }
 
-    context = "\n\n---\n\n".join(
-        f"[{c['filename']}]\n{c['text']}" for c in chunks
-    )
-    try:
-        answer = generate.generate(req.question, context)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
-
-    return {
-        "mode": "summarize",
-        "question": req.question,
-        "answer": answer,
-        "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
-        "embedded_on_demand": embedded_now,
-    }
+    memory.add_message("assistant", _assistant_content(response), active_mode)
+    return response
 
 
 @router.get("/files")

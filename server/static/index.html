@@ -1,987 +1,401 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>File Assistant</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>File Assistant — Chat</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --panel-2: #1d212b;
-    --border: #2a2f3a;
-    --text: #e6e8ee;
-    --muted: #9aa3b2;
-    --accent: #6ea8fe;
-    --accent-press: #4f8cf0;
-    --badge: #2a3242;
-    --ok: #57c98a;
-    --shadow: rgba(0,0,0,0.4);
+    --bg:        #0e1116;
+    --panel:     #161b22;
+    --panel-2:   #1c232d;
+    --border:    #2a313c;
+    --text:      #e6edf3;
+    --muted:     #8b949e;
+    --accent:    #4493f8;
+    --accent-2:  #1f6feb;
+    --user:      #1f6feb;
+    --assistant: #1c232d;
+    --badge-claude:   #d2a8ff;
+    --badge-ollama:   #7ee787;
+    --badge-retrieval:#8b949e;
+    --danger:    #f85149;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap {
-    max-width: 820px;
-    margin: 0 auto;
-    padding: 16px 14px 48px;
-  }
-  header h1 {
-    font-size: 1.35rem;
-    margin: 8px 0 2px;
-    letter-spacing: 0.2px;
-  }
-  header p {
-    margin: 0 0 14px;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-  .tabs {
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-  .tab {
-    flex: 0 0 auto;
-    background: var(--panel);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 9px 16px;
-    font-size: 0.92rem;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-  .tab.active {
-    background: var(--panel-2);
-    color: var(--text);
-    border-color: var(--accent);
+    flex-direction: column;
   }
 
-  /* Upload zone */
-  .upload-zone {
-    border: 1px dashed var(--border);
-    border-radius: 12px;
-    background: var(--panel);
-    padding: 16px 14px;
-    margin-bottom: 16px;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .upload-zone.drag {
-    border-color: var(--accent);
-    background: var(--panel-2);
-  }
-  .drop-prompt { color: var(--muted); font-size: 0.9rem; text-align: center; }
-  .link {
-    background: none; border: none; padding: 0;
-    color: var(--accent); cursor: pointer; font-size: inherit; text-decoration: underline;
-  }
-  .staged-name {
-    font-weight: 600; font-size: 0.92rem; margin-bottom: 10px; word-break: break-all;
-  }
-  .staged-name .badge { margin-left: 6px; }
-  #note-input {
-    width: 100%;
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 12px;
-    font-size: 0.95rem;
-    font-family: inherit;
-    margin-bottom: 10px;
-  }
-  #note-input:focus { outline: none; border-color: var(--accent); }
-  .upload-actions { display: flex; gap: 8px; }
-  .progress {
-    height: 8px; background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 999px; overflow: hidden; margin-top: 12px;
-  }
-  .progress .bar {
-    height: 100%; width: 0%; background: var(--accent);
-    transition: width 0.15s ease;
-  }
-  .upload-status { margin-top: 10px; font-size: 0.85rem; }
-  .upload-status.ok { color: var(--ok); }
-  .upload-status.err { color: #ff8b8b; }
-
-  .ask-row {
+  /* Header */
+  header {
     display: flex;
-    gap: 8px;
-    margin-bottom: 14px;
-  }
-  textarea#q {
-    flex: 1 1 auto;
-    resize: vertical;
-    min-height: 48px;
-    max-height: 200px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 20px;
     background: var(--panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 11px 12px;
-    font-size: 1rem;
-    font-family: inherit;
-  }
-  textarea#q:focus { outline: none; border-color: var(--accent); }
-  button.primary {
+    border-bottom: 1px solid var(--border);
     flex: 0 0 auto;
-    background: var(--accent);
-    color: #0b1220;
-    border: none;
-    border-radius: 10px;
-    padding: 10px 18px;
-    font-size: 0.95rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
   }
-  button.primary:hover { background: var(--accent-press); }
-  button.primary:disabled { opacity: 0.5; cursor: default; }
+  .title { font-weight: 600; font-size: 16px; letter-spacing: .2px; }
+  .title small { color: var(--muted); font-weight: 400; margin-left: 8px; }
 
-  .spinner-wrap {
-    display: none;
+  /* Mode toggle */
+  .mode {
+    display: flex;
     align-items: center;
     gap: 10px;
-    color: var(--muted);
-    font-size: 0.9rem;
-    padding: 18px 2px;
   }
-  .spinner-wrap.show { display: flex; }
-  .spinner {
-    width: 20px; height: 20px;
-    border: 3px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .mode-line {
-    font-size: 0.82rem;
-    color: var(--muted);
-    margin: 4px 0 12px;
-  }
-  .mode-pill {
-    display: inline-block;
-    background: var(--badge);
+  .mode .label { color: var(--muted); font-size: 13px; }
+  .switch {
+    display: inline-flex;
+    background: var(--panel-2);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 2px 10px;
-    font-size: 0.75rem;
-    color: var(--accent);
-    margin-right: 6px;
+    padding: 3px;
   }
-
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 13px 14px;
-    margin-bottom: 12px;
-    box-shadow: 0 1px 3px var(--shadow);
-  }
-  .card-head {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .fname {
+  .switch button {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 13px;
     font-weight: 600;
-    font-size: 0.92rem;
-    word-break: break-all;
+    transition: all .15s ease;
+  }
+  .switch button.active {
+    color: #fff;
+    background: var(--accent-2);
+  }
+  .switch button:disabled { cursor: default; opacity: .7; }
+
+  /* Chat area */
+  main {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 24px 0;
+  }
+  .chat {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 0 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg { display: flex; flex-direction: column; max-width: 85%; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.assistant { align-self: flex-start; align-items: flex-start; }
+  .bubble {
+    padding: 11px 14px;
+    border-radius: 14px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg.user .bubble {
+    background: var(--user);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant .bubble {
+    background: var(--assistant);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--muted);
   }
   .badge {
     display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: var(--badge);
-    color: var(--accent);
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
     border: 1px solid var(--border);
   }
-  .score {
-    margin-left: auto;
-    font-size: 0.72rem;
-    color: var(--muted);
-  }
-  .folder-badge { color: var(--muted); text-transform: none; letter-spacing: 0; }
-  .note-line {
-    font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-style: italic;
-  }
-  .chunk-text, .summary-text {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 0.88rem;
+  .badge.claude    { color: var(--badge-claude);    border-color: #3d2d5c; }
+  .badge.ollama    { color: var(--badge-ollama);    border-color: #1f3d24; }
+  .badge.retrieval { color: var(--badge-retrieval); }
+  .sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .source {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px 7px;
+    font-size: 11px;
     color: var(--text);
   }
-  .chunk-text {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.8rem;
-    color: #cdd3df;
-    max-height: 320px;
-    overflow: auto;
-  }
-  .summary-card .summary-text { font-size: 0.95rem; }
-  .sources {
-    margin-top: 12px;
-    font-size: 0.8rem;
+  .snippet {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
     color: var(--muted);
   }
-  .sources .badge { margin: 2px 4px 2px 0; color: var(--muted); }
+  .snippet .fn { color: var(--accent); font-weight: 600; display: block; margin-bottom: 2px; }
+  .typing { color: var(--muted); font-style: italic; }
 
-  .file-row {
+  /* Composer */
+  footer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding: 14px 20px;
+  }
+  .composer {
+    max-width: 820px;
+    margin: 0 auto;
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
+    align-items: flex-end;
   }
-  .file-meta {
-    width: 100%;
-    font-size: 0.74rem;
-    color: var(--muted);
-    margin-top: 4px;
+  textarea {
+    flex: 1 1 auto;
+    resize: none;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 13px;
+    font: inherit;
+    max-height: 160px;
+    min-height: 44px;
   }
-  .empty, .error {
-    color: var(--muted);
-    font-size: 0.9rem;
-    padding: 16px 2px;
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .send {
+    background: var(--accent-2);
+    color: #fff;
+    border: 0;
+    border-radius: 10px;
+    padding: 0 20px;
+    height: 44px;
+    font-weight: 600;
+    cursor: pointer;
   }
-  .error { color: #ff8b8b; }
-  .hidden { display: none; }
-
-  /* Scope selector */
-  .scope-line {
-    font-size: 0.82rem; color: var(--muted);
-    margin-bottom: 10px; display: flex; gap: 8px; align-items: center;
-  }
-  .scope-picker {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
-  }
-  .scope-picker .pick {
-    display: flex; align-items: center; gap: 8px; padding: 5px 0;
-    font-size: 0.88rem;
-  }
-  .scope-picker .pick input { width: 16px; height: 16px; }
-  .scope-picker .pick .muted { color: var(--muted); font-size: 0.78rem; }
-  .scope-actions { margin-top: 8px; display: flex; gap: 8px; }
-
-  /* Auto-suggest banner */
-  .suggest {
-    background: var(--panel-2); border: 1px solid var(--accent);
-    border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
-    font-size: 0.88rem; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  }
-  .suggest .sg-actions { margin-left: auto; display: flex; gap: 6px; }
-  .btn-sm {
-    border: 1px solid var(--border); background: var(--panel);
-    color: var(--text); border-radius: 8px; padding: 4px 12px;
-    font-size: 0.82rem; cursor: pointer;
-  }
-  .btn-sm.yes { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
-
-  /* Folder upload bits */
-  .hint { font-size: 0.76rem; color: var(--muted); margin-top: 6px; }
-  .bubble {
-    background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 12px 12px 12px 4px; padding: 9px 12px; margin: 4px 0 10px;
-    font-size: 0.9rem; display: inline-block;
-  }
-  .status-badge {
-    display: inline-block; font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.4px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
-  }
-  .st-pending { background: #3a2f1d; color: #e0b667; }
-  .st-partial { background: #1d2f3a; color: #67b6e0; }
-  .st-indexed { background: #1d3a2a; color: var(--ok); }
-  .folder-card-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .folder-card-row .fname { flex: 0 1 auto; }
-  .trash {
-    margin-left: auto; background: none; border: none; cursor: pointer;
-    color: var(--muted); font-size: 1rem;
-  }
-  .trash:hover { color: #ff8b8b; }
-  .fchk { width: 16px; height: 16px; }
+  .send:disabled { opacity: .5; cursor: default; }
+  .hint { max-width: 820px; margin: 6px auto 0; color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 40px; }
+  a.files-link { color: var(--accent); text-decoration: none; font-size: 13px; }
 </style>
 </head>
 <body>
-<div class="wrap">
   <header>
-    <h1>File Assistant</h1>
-    <p>Ask questions across your indexed files, upload new ones, or browse what's been ingested.</p>
+    <div class="title">File Assistant <small id="backendInfo"></small></div>
+    <div class="mode">
+      <span class="label">Mode</span>
+      <div class="switch" id="modeSwitch">
+        <button data-mode="local">Local</button>
+        <button data-mode="hetzner">Hetzner</button>
+      </div>
+      <a class="files-link" href="/files.html" title="File manager">Files →</a>
+    </div>
   </header>
 
-  <div class="tabs">
-    <button class="tab active" id="tab-ask" type="button">Ask</button>
-    <button class="tab" id="tab-folders" type="button">Folders</button>
-    <button class="tab" id="tab-files" type="button">Files</button>
-  </div>
-
-  <!-- Ask view -->
-  <section id="view-ask">
-
-    <!-- Upload zone -->
-    <div class="upload-zone" id="drop">
-      <input type="file" id="file-input" class="hidden" />
-      <div class="drop-prompt" id="drop-prompt">
-        <strong>Drop a file here</strong> or <button class="link" id="choose-btn" type="button">choose one</button> to upload &amp; index
-      </div>
-      <div id="staged" class="hidden">
-        <div class="staged-name" id="staged-name"></div>
-        <input type="text" id="note-input" placeholder="Add a note / description (optional, searchable)" />
-        <div class="upload-actions">
-          <button class="primary" id="upload-btn" type="button">Upload &amp; index</button>
-          <button class="tab" id="upload-cancel" type="button">Cancel</button>
-        </div>
-        <div class="progress hidden" id="upload-progress"><div class="bar" id="upload-bar"></div></div>
-      </div>
-      <div class="upload-status" id="upload-status"></div>
+  <main id="main">
+    <div class="chat" id="chat">
+      <div class="empty" id="empty">Ask a question about your indexed files.</div>
     </div>
+  </main>
 
-    <!-- Search scope -->
-    <div class="scope-line">
-      <span id="scope-label">Searching: All indexed files</span>
-      <button class="link" id="scope-change" type="button">change</button>
+  <footer>
+    <div class="composer">
+      <textarea id="input" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+      <button class="send" id="send">Send</button>
     </div>
-    <div id="scope-picker" class="scope-picker hidden"></div>
-
-    <!-- Auto-suggestion when an unindexed folder matches the question -->
-    <div id="suggest" class="suggest hidden"></div>
-
-    <div class="ask-row">
-      <textarea id="q" placeholder="Ask something — e.g. &quot;what is mindcast&quot;, or &quot;summarize the architecture&quot;"></textarea>
-      <button class="primary" id="ask-btn" type="button">Ask</button>
-    </div>
-    <div class="spinner-wrap" id="ask-spin"><div class="spinner"></div><span>Searching…</span></div>
-    <div id="ask-results"></div>
-  </section>
-
-  <!-- Folders view -->
-  <section id="view-folders" class="hidden">
-    <div class="upload-zone" id="folder-drop">
-      <input type="file" id="folder-input" class="hidden" webkitdirectory directory multiple />
-      <div class="drop-prompt" id="folder-prompt">
-        <strong>Drop a folder here</strong> or <button class="link" id="folder-choose" type="button">choose a folder</button> to register
-        <div class="hint">Files are registered instantly and indexed only when you search them.</div>
-      </div>
-      <div id="folder-staged" class="hidden">
-        <div class="staged-name" id="folder-staged-name"></div>
-        <div class="bubble">What is this folder about?</div>
-        <input type="text" id="folder-note" placeholder="Describe it naturally — e.g. &quot;my mindcast project source code&quot;" />
-        <div class="upload-actions">
-          <button class="primary" id="folder-register" type="button">Register folder</button>
-          <button class="tab" id="folder-cancel" type="button">Cancel</button>
-        </div>
-        <div class="progress hidden" id="folder-progress"><div class="bar" id="folder-bar"></div></div>
-      </div>
-      <div class="upload-status" id="folder-status"></div>
-    </div>
-
-    <div class="spinner-wrap" id="folders-spin"><div class="spinner"></div><span>Loading folders…</span></div>
-    <div id="folders-list"></div>
-  </section>
-
-  <!-- Files view -->
-  <section id="view-files" class="hidden">
-    <div class="spinner-wrap" id="files-spin"><div class="spinner"></div><span>Loading files…</span></div>
-    <div id="files-results"></div>
-  </section>
-</div>
+    <div class="hint" id="hint"></div>
+  </footer>
 
 <script>
-(function () {
+(() => {
   "use strict";
+  const chat   = document.getElementById("chat");
+  const empty  = document.getElementById("empty");
+  const input  = document.getElementById("input");
+  const sendBtn= document.getElementById("send");
+  const hint   = document.getElementById("hint");
+  const modeSwitch = document.getElementById("modeSwitch");
+  const backendInfo = document.getElementById("backendInfo");
 
-  // ---- helpers -----------------------------------------------------------
+  let currentMode = null;
+  let busy = false;
+
+  // --- helpers -------------------------------------------------------------
   function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text !== undefined && text !== null) n.textContent = text;
-    return n;
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
   }
-  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-  function extOf(name) {
-    return (name && name.indexOf(".") >= 0) ? name.split(".").pop() : "";
-  }
-  function fmtSize(bytes) {
-    if (bytes === undefined || bytes === null) return "";
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  }
-  function fmtDate(iso) {
-    if (!iso) return "";
-    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+  function scrollDown() { document.getElementById("main").scrollTop = 1e9; }
+
+  function addUser(text) {
+    if (empty.parentNode) empty.remove();
+    const m = el("div", "msg user");
+    m.appendChild(el("div", "bubble", text));
+    chat.appendChild(m);
+    scrollDown();
   }
 
-  // ---- tab switching -----------------------------------------------------
-  var TABS = {
-    ask:     { tab: "tab-ask",     view: "view-ask" },
-    folders: { tab: "tab-folders", view: "view-folders" },
-    files:   { tab: "tab-files",   view: "view-files" }
-  };
-  function showView(name) {
-    Object.keys(TABS).forEach(function (k) {
-      document.getElementById(TABS[k].tab).classList.toggle("active", k === name);
-      document.getElementById(TABS[k].view).classList.toggle("hidden", k !== name);
-    });
-    if (name === "files") loadFiles();
-    if (name === "folders") loadFolders();
-  }
-  document.getElementById("tab-ask").addEventListener("click", function () { showView("ask"); });
-  document.getElementById("tab-folders").addEventListener("click", function () { showView("folders"); });
-  document.getElementById("tab-files").addEventListener("click", function () { showView("files"); });
-
-  // ---- shared folder state -----------------------------------------------
-  var selectedFolderIds = {};      // id -> true (folders scoped into search)
-  var foldersCache = [];           // last /folders payload
-  var suggestDismissed = {};       // topic -> true (don't re-suggest)
-
-  function selectedIdList() {
-    return Object.keys(selectedFolderIds).filter(function (id) { return selectedFolderIds[id]; });
+  // Returns the message element so we can replace its contents when the reply
+  // arrives (typing indicator -> answer).
+  function addAssistantPlaceholder() {
+    const m = el("div", "msg assistant");
+    const b = el("div", "bubble");
+    b.appendChild(el("span", "typing", "thinking…"));
+    m.appendChild(b);
+    chat.appendChild(m);
+    scrollDown();
+    return m;
   }
 
-  // ---- upload flow -------------------------------------------------------
-  var drop = document.getElementById("drop");
-  var dropPrompt = document.getElementById("drop-prompt");
-  var fileInput = document.getElementById("file-input");
-  var chooseBtn = document.getElementById("choose-btn");
-  var staged = document.getElementById("staged");
-  var stagedName = document.getElementById("staged-name");
-  var noteInput = document.getElementById("note-input");
-  var uploadBtn = document.getElementById("upload-btn");
-  var uploadCancel = document.getElementById("upload-cancel");
-  var uploadProgress = document.getElementById("upload-progress");
-  var uploadBar = document.getElementById("upload-bar");
-  var uploadStatus = document.getElementById("upload-status");
-  var stagedFile = null;
-
-  function stageFile(f) {
-    stagedFile = f;
-    clear(stagedName);
-    stagedName.appendChild(el("span", null, f.name));
-    var e = extOf(f.name);
-    if (e) stagedName.appendChild(el("span", "badge", e));
-    stagedName.appendChild(el("span", "score", fmtSize(f.size)));
-    noteInput.value = "";
-    uploadStatus.className = "upload-status";
-    uploadStatus.textContent = "";
-    uploadProgress.classList.add("hidden");
-    uploadBar.style.width = "0%";
-    dropPrompt.classList.add("hidden");
-    staged.classList.remove("hidden");
-    noteInput.focus();
-  }
-  function resetUpload() {
-    stagedFile = null;
-    fileInput.value = "";
-    staged.classList.add("hidden");
-    dropPrompt.classList.remove("hidden");
+  function backendBadge(backend) {
+    const cls = backend === "ollama" ? "ollama" : backend === "claude" ? "claude" : "retrieval";
+    const label = backend === "retrieval" ? "retrieval (no LLM)" : backend;
+    return el("span", "badge " + cls, label);
   }
 
-  chooseBtn.addEventListener("click", function () { fileInput.click(); });
-  fileInput.addEventListener("change", function () {
-    if (fileInput.files && fileInput.files[0]) stageFile(fileInput.files[0]);
-  });
-  uploadCancel.addEventListener("click", resetUpload);
+  function renderAssistant(m, data) {
+    m.innerHTML = "";
+    const bubble = el("div", "bubble");
 
-  // drag & drop
-  ["dragenter", "dragover"].forEach(function (ev) {
-    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); });
-  });
-  ["dragleave", "drop"].forEach(function (ev) {
-    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("drag"); });
-  });
-  drop.addEventListener("drop", function (e) {
-    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
-      stageFile(e.dataTransfer.files[0]);
-    }
-  });
-
-  function setStatusLines(cls, lines) {
-    clear(uploadStatus);
-    uploadStatus.className = "upload-status" + (cls ? " " + cls : "");
-    lines.forEach(function (t) { uploadStatus.appendChild(el("div", null, t)); });
-  }
-
-  uploadBtn.addEventListener("click", function () {
-    if (!stagedFile) return;
-    var form = new FormData();
-    form.append("file", stagedFile);
-    form.append("note", noteInput.value || "");
-
-    uploadBtn.disabled = true;
-    uploadCancel.disabled = true;
-    setStatusLines("", ["Uploading…"]);
-    uploadProgress.classList.remove("hidden");
-    uploadBar.style.width = "0%";
-
-    var phaseTimer = null;
-    var xhr = new XMLHttpRequest();
-    xhr.open("POST", "/upload", true);
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) {
-        var pct = Math.round((e.loaded / e.total) * 100);
-        uploadBar.style.width = pct + "%";
-        if (pct >= 100) {
-          // Bytes are in. The server now derives the folder from the note,
-          // then embeds — show "organizing…" before "indexing…".
-          setStatusLines("", ["Organizing… (deciding a folder)"]);
-          if (phaseTimer) clearTimeout(phaseTimer);
-          phaseTimer = setTimeout(function () {
-            setStatusLines("", ["Indexing… (embedding the file)"]);
-          }, 900);
-        }
-      }
-    };
-    xhr.onload = function () {
-      if (phaseTimer) clearTimeout(phaseTimer);
-      uploadBtn.disabled = false;
-      uploadCancel.disabled = false;
-      if (xhr.status >= 200 && xhr.status < 300) {
-        var data = {};
-        try { data = JSON.parse(xhr.responseText); } catch (e) {}
-        uploadBar.style.width = "100%";
-        var fname = data.filename || stagedFile.name;
-        var folder = data.folder || "documents";
-        setStatusLines("ok", ["✓ Indexed " + fname, "Saved to → /" + folder]);
-        // Reset the staged form but keep the confirmation (it lives outside it).
-        setTimeout(resetUpload, 1200);
-      } else {
-        var detail = xhr.responseText;
-        try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
-        setStatusLines("err", ["Error " + xhr.status + ": " + detail]);
-      }
-    };
-    xhr.onerror = function () {
-      if (phaseTimer) clearTimeout(phaseTimer);
-      uploadBtn.disabled = false;
-      uploadCancel.disabled = false;
-      setStatusLines("err", ["Network error during upload."]);
-    };
-    xhr.send(form);
-  });
-
-  // ---- ask flow ----------------------------------------------------------
-  var qInput = document.getElementById("q");
-  var askBtn = document.getElementById("ask-btn");
-  var askSpin = document.getElementById("ask-spin");
-  var askResults = document.getElementById("ask-results");
-
-  function renderChunk(chunk) {
-    var card = el("div", "card");
-    var head = el("div", "card-head");
-    head.appendChild(el("span", "fname", chunk.filename || "(unknown)"));
-    var ft = extOf(chunk.filename) || chunk.source || "";
-    if (ft) head.appendChild(el("span", "badge", ft));
-    if (typeof chunk.score === "number") {
-      head.appendChild(el("span", "score", "score " + chunk.score.toFixed(3)));
-    }
-    card.appendChild(head);
-    if (chunk.note) card.appendChild(el("div", "note-line", "note: " + chunk.note));
-    card.appendChild(el("div", "chunk-text", chunk.text || ""));
-    return card;
-  }
-
-  function renderSources(sources) {
-    var wrap = el("div", "sources");
-    wrap.appendChild(el("span", null, "Sources: "));
-    (sources || []).forEach(function (s) {
-      wrap.appendChild(el("span", "badge", s));
-    });
-    return wrap;
-  }
-
-  function renderResponse(data) {
-    clear(askResults);
-
-    var modeLine = el("div", "mode-line");
-    modeLine.appendChild(el("span", "mode-pill", data.mode === "summarize" ? "Summarize" : "Find"));
-    modeLine.appendChild(el("span", null, data.question || ""));
-    askResults.appendChild(modeLine);
-
-    if (data.embedded_on_demand) {
-      askResults.appendChild(el("div", "mode-line", "⚡ Indexed " + data.embedded_on_demand + " pending file(s) on demand for this search."));
-    }
-
-    if (data.mode === "summarize") {
-      var card = el("div", "card summary-card");
-      card.appendChild(el("div", "summary-text", data.answer || ""));
-      if (data.sources && data.sources.length) card.appendChild(renderSources(data.sources));
-      askResults.appendChild(card);
-    } else {
-      var chunks = data.chunks || [];
-      if (!chunks.length) {
-        askResults.appendChild(el("div", "empty", "No matching content found."));
-        return;
-      }
-      chunks.forEach(function (c) { askResults.appendChild(renderChunk(c)); });
-    }
-  }
-
-  function ask() {
-    var question = (qInput.value || "").trim();
-    if (!question) { qInput.focus(); return; }
-    clear(askResults);
-    askBtn.disabled = true;
-    askSpin.classList.add("show");
-    checkSuggest(question);
-
-    fetch("/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: question, filters: {}, folder_ids: selectedIdList() })
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error("Server returned " + r.status);
-        return r.json();
-      })
-      .then(function (data) { renderResponse(data); })
-      .catch(function (err) {
-        clear(askResults);
-        askResults.appendChild(el("div", "error", "Error: " + err.message));
-      })
-      .finally(function () {
-        askBtn.disabled = false;
-        askSpin.classList.remove("show");
+    if (data.mode === "find") {
+      // find mode: no generated answer — show the retrieved snippets.
+      bubble.appendChild(el("div", null,
+        (data.chunks && data.chunks.length)
+          ? "Top matches from your files:"
+          : "No relevant content was found."));
+      (data.chunks || []).forEach(c => {
+        const s = el("div", "snippet");
+        s.appendChild(el("span", "fn", c.filename || "(unknown)"));
+        const txt = c.text || "";
+        s.appendChild(document.createTextNode(txt.slice(0, 240) + (txt.length > 240 ? "…" : "")));
+        bubble.appendChild(s);
       });
-  }
-
-  askBtn.addEventListener("click", ask);
-  qInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
-  });
-
-  // ---- files flow --------------------------------------------------------
-  var filesSpin = document.getElementById("files-spin");
-  var filesResults = document.getElementById("files-results");
-
-  function renderFile(f) {
-    var card = el("div", "card");
-    var row = el("div", "file-row");
-    row.appendChild(el("span", "fname", f.filename || "(unknown)"));
-    if (f.filetype) row.appendChild(el("span", "badge", f.filetype));
-    var folder = f.folder || f.source;
-    if (folder) {
-      var fb = el("span", "badge folder-badge", "📁 " + folder);
-      fb.style.marginLeft = "auto";
-      row.appendChild(fb);
-    }
-    card.appendChild(row);
-
-    var bits = [];
-    if (f.chunks !== undefined) bits.push(f.chunks + " chunk" + (f.chunks === 1 ? "" : "s"));
-    if (f.filesize !== undefined) bits.push(fmtSize(f.filesize));
-    if (f.date_ingested) bits.push("ingested " + fmtDate(f.date_ingested));
-    card.appendChild(el("div", "file-meta", bits.join("  ·  ")));
-    return card;
-  }
-
-  function loadFiles() {
-    clear(filesResults);
-    filesSpin.classList.add("show");
-
-    fetch("/files")
-      .then(function (r) {
-        if (!r.ok) throw new Error("Server returned " + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        clear(filesResults);
-        var files = data.files || [];
-        var head = el("div", "mode-line");
-        head.appendChild(el("span", "mode-pill", "Files"));
-        head.appendChild(el("span", null, data.count + " document" + (data.count === 1 ? "" : "s") + " indexed"));
-        filesResults.appendChild(head);
-        if (!files.length) {
-          filesResults.appendChild(el("div", "empty", "No files indexed yet. Upload one or drop files into the watch folders."));
-          return;
-        }
-        files.forEach(function (f) { filesResults.appendChild(renderFile(f)); });
-      })
-      .catch(function (err) {
-        clear(filesResults);
-        filesResults.appendChild(el("div", "error", "Error: " + err.message));
-      })
-      .finally(function () { filesSpin.classList.remove("show"); });
-  }
-
-  // ---- search scope picker -----------------------------------------------
-  var scopeLabel = document.getElementById("scope-label");
-  var scopeChange = document.getElementById("scope-change");
-  var scopePicker = document.getElementById("scope-picker");
-
-  function refreshScopeLabel() {
-    var ids = selectedIdList();
-    if (!ids.length) { scopeLabel.textContent = "Searching: All indexed files"; return; }
-    var topics = ids.map(function (id) {
-      var f = foldersCache.filter(function (x) { return x.id === id; })[0];
-      return f ? f.topic : id;
-    });
-    scopeLabel.textContent = "Searching: " + ids.length + " folder" + (ids.length === 1 ? "" : "s") +
-      " (" + topics.join(", ") + ")";
-  }
-
-  function renderScopePicker() {
-    clear(scopePicker);
-    if (!foldersCache.length) {
-      scopePicker.appendChild(el("div", "muted", "No registered folders yet. Add one in the Folders tab."));
     } else {
-      foldersCache.forEach(function (f) {
-        var row = el("label", "pick");
-        var cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!selectedFolderIds[f.id];
-        cb.addEventListener("change", function () {
-          selectedFolderIds[f.id] = cb.checked; refreshScopeLabel();
-        });
-        row.appendChild(cb);
-        row.appendChild(el("span", null, "📁 " + (f.topic || "folder")));
-        row.appendChild(el("span", "muted", f.indexed_count + "/" + f.file_count + " indexed · " + f.status));
-        scopePicker.appendChild(row);
+      bubble.textContent = data.answer || "(empty response)";
+    }
+    m.appendChild(bubble);
+
+    // meta row: backend badge + source filenames
+    const meta = el("div", "meta");
+    if (data.backend) meta.appendChild(backendBadge(data.backend));
+    if (data.sources && data.sources.length) {
+      const srcWrap = el("div", "sources");
+      srcWrap.appendChild(el("span", null, "sources:"));
+      data.sources.forEach(s => srcWrap.appendChild(el("span", "source", s)));
+      meta.appendChild(srcWrap);
+    }
+    m.appendChild(meta);
+    scrollDown();
+  }
+
+  function renderError(m, msg) {
+    m.innerHTML = "";
+    const bubble = el("div", "bubble");
+    bubble.style.color = "var(--danger)";
+    bubble.textContent = "Error: " + msg;
+    m.appendChild(bubble);
+  }
+
+  // --- mode ----------------------------------------------------------------
+  function paintMode(mode) {
+    currentMode = mode;
+    [...modeSwitch.children].forEach(b =>
+      b.classList.toggle("active", b.dataset.mode === mode));
+    hint.textContent = mode === "hetzner"
+      ? "Hetzner: technical research assistant, grounded in your literature."
+      : "Local: casual personal assistant that remembers your past chats.";
+  }
+
+  async function loadMode() {
+    try {
+      const d = await (await fetch("/mode")).json();
+      paintMode(d.mode);
+    } catch (e) { paintMode("local"); }
+  }
+
+  async function setMode(mode) {
+    if (mode === currentMode) return;
+    try {
+      const r = await fetch("/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
       });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "failed");
+      paintMode(d.mode);
+    } catch (e) {
+      hint.textContent = "Could not switch mode: " + e.message;
     }
-    var actions = el("div", "scope-actions");
-    var done = el("button", "btn-sm", "Done");
-    done.addEventListener("click", function () { scopePicker.classList.add("hidden"); });
-    var clearBtn = el("button", "btn-sm", "Clear (search all)");
-    clearBtn.addEventListener("click", function () {
-      selectedFolderIds = {}; refreshScopeLabel(); renderScopePicker();
-    });
-    actions.appendChild(done); actions.appendChild(clearBtn);
-    scopePicker.appendChild(actions);
   }
 
-  scopeChange.addEventListener("click", function () {
-    if (scopePicker.classList.contains("hidden")) {
-      loadFolders(function () { renderScopePicker(); scopePicker.classList.remove("hidden"); });
-    } else {
-      scopePicker.classList.add("hidden");
+  modeSwitch.addEventListener("click", e => {
+    const btn = e.target.closest("button[data-mode]");
+    if (btn) setMode(btn.dataset.mode);
+  });
+
+  // --- backend info in header ----------------------------------------------
+  async function loadHealth() {
+    try {
+      const d = await (await fetch("/health")).json();
+      backendInfo.textContent = "· backend: " + d.backend;
+    } catch (e) {}
+  }
+
+  // --- sending -------------------------------------------------------------
+  async function send() {
+    const text = input.value.trim();
+    if (!text || busy) return;
+    busy = true; sendBtn.disabled = true;
+    addUser(text);
+    input.value = ""; input.style.height = "auto";
+    const placeholder = addAssistantPlaceholder();
+
+    try {
+      const r = await fetch("/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: text })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+      renderAssistant(placeholder, d);
+    } catch (e) {
+      renderError(placeholder, e.message);
+    } finally {
+      busy = false; sendBtn.disabled = false; input.focus();
     }
-  });
-
-  // ---- auto-suggest unindexed folders ------------------------------------
-  var suggestBox = document.getElementById("suggest");
-  function tokens(s) { return (s || "").toLowerCase().match(/[a-z0-9]+/g) || []; }
-  function checkSuggest(question) {
-    suggestBox.classList.add("hidden"); clear(suggestBox);
-    var qt = {}; tokens(question).forEach(function (t) { qt[t] = true; });
-    var match = null;
-    foldersCache.forEach(function (f) {
-      if (match || f.status === "fully-indexed") return;
-      if (selectedFolderIds[f.id] || suggestDismissed[f.id]) return;
-      var ht = tokens((f.topic || "") + " " + (f.note || ""));
-      for (var i = 0; i < ht.length; i++) { if (qt[ht[i]]) { match = f; break; } }
-    });
-    if (!match) return;
-    suggestBox.appendChild(el("span", null,
-      "💡 You have an unindexed folder matching \"" + (match.topic || "") + "\" — include it?"));
-    var actions = el("span", "sg-actions");
-    var yes = el("button", "btn-sm yes", "Yes");
-    var no = el("button", "btn-sm", "No");
-    yes.addEventListener("click", function () {
-      selectedFolderIds[match.id] = true; refreshScopeLabel();
-      suggestBox.classList.add("hidden"); ask();
-    });
-    no.addEventListener("click", function () {
-      suggestDismissed[match.id] = true; suggestBox.classList.add("hidden");
-    });
-    actions.appendChild(yes); actions.appendChild(no);
-    suggestBox.appendChild(actions);
-    suggestBox.classList.remove("hidden");
   }
 
-  // ---- folders tab -------------------------------------------------------
-  var folderDrop = document.getElementById("folder-drop");
-  var folderPrompt = document.getElementById("folder-prompt");
-  var folderInput = document.getElementById("folder-input");
-  var folderChoose = document.getElementById("folder-choose");
-  var folderStaged = document.getElementById("folder-staged");
-  var folderStagedName = document.getElementById("folder-staged-name");
-  var folderNote = document.getElementById("folder-note");
-  var folderRegister = document.getElementById("folder-register");
-  var folderCancel = document.getElementById("folder-cancel");
-  var folderProgress = document.getElementById("folder-progress");
-  var folderBar = document.getElementById("folder-bar");
-  var folderStatus = document.getElementById("folder-status");
-  var foldersSpin = document.getElementById("folders-spin");
-  var foldersList = document.getElementById("folders-list");
-  var stagedFiles = null;
-
-  function stageFolder(fileList) {
-    stagedFiles = fileList;
-    var top = "";
-    if (fileList.length && fileList[0].webkitRelativePath) top = fileList[0].webkitRelativePath.split("/")[0];
-    clear(folderStagedName);
-    folderStagedName.appendChild(el("span", null,
-      (top || "folder") + " — " + fileList.length + " file" + (fileList.length === 1 ? "" : "s")));
-    folderNote.value = "";
-    clear(folderStatus); folderStatus.className = "upload-status";
-    folderProgress.classList.add("hidden"); folderBar.style.width = "0%";
-    folderPrompt.classList.add("hidden");
-    folderStaged.classList.remove("hidden");
-    folderNote.focus();
-  }
-  function resetFolderUpload() {
-    stagedFiles = null; folderInput.value = "";
-    folderStaged.classList.add("hidden"); folderPrompt.classList.remove("hidden");
-  }
-
-  folderChoose.addEventListener("click", function () { folderInput.click(); });
-  folderInput.addEventListener("change", function () {
-    if (folderInput.files && folderInput.files.length) stageFolder(folderInput.files);
+  sendBtn.addEventListener("click", send);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
-  folderCancel.addEventListener("click", resetFolderUpload);
-
-  ["dragenter", "dragover"].forEach(function (ev) {
-    folderDrop.addEventListener(ev, function (e) { e.preventDefault(); folderDrop.classList.add("drag"); });
-  });
-  ["dragleave", "drop"].forEach(function (ev) {
-    folderDrop.addEventListener(ev, function (e) { e.preventDefault(); folderDrop.classList.remove("drag"); });
-  });
-  folderDrop.addEventListener("drop", function (e) {
-    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-      stageFolder(e.dataTransfer.files);
-    }
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
   });
 
-  folderRegister.addEventListener("click", function () {
-    if (!stagedFiles || !stagedFiles.length) return;
-    var form = new FormData();
-    for (var i = 0; i < stagedFiles.length; i++) {
-      var f = stagedFiles[i];
-      form.append("files", f, f.webkitRelativePath || f.name);
-    }
-    form.append("note", folderNote.value || "");
-
-    folderRegister.disabled = true; folderCancel.disabled = true;
-    clear(folderStatus); folderStatus.className = "upload-status";
-    folderStatus.appendChild(el("div", null, "Uploading folder…"));
-    folderProgress.classList.remove("hidden"); folderBar.style.width = "0%";
-
-    var phase = null;
-    var xhr = new XMLHttpRequest();
-    xhr.open("POST", "/register_folder", true);
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) {
-        var pct = Math.round((e.loaded / e.total) * 100);
-        folderBar.style.width = pct + "%";
-        if (pct >= 100) {
-          clear(folderStatus); folderStatus.appendChild(el("div", null, "Organizing… (deciding a topic)"));
-          if (phase) clearTimeout(phase);
-          phase = setTimeout(function () {
-            clear(folderStatus); folderStatus.appendChild(el("div", null, "Registering files…"));
-          }, 800);
-        }
-      }
-    };
-    xhr.onload = function () {
-      if (phase) clearTimeout(phase);
-      folderRegister.disabled = false; folderCancel.disabled = false;
-      if (xhr.status >= 200 && xhr.status < 300) {
-        var d = {}; try { d = JSON.parse(xhr.responseText); } catch (e) {}
-        folderBar.style.width = "100%";
-        clear(folderStatus); folderStatus.className = "upload-status ok";
-        folderStatus.appendChild(el("div", null,
-          "📁 Registered " + (d.registered || 0) + " files → topic: " + (d.topic || "documents") + " (not indexed yet)"));
-        if (d.duplicates_skipped) folderStatus.appendChild(el("div", null, d.duplicates_skipped + " duplicate(s) skipped"));
-        setTimeout(resetFolderUpload, 1200);
-        loadFolders();
-      } else {
-        var detail = xhr.responseText; try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (e) {}
-        clear(folderStatus); folderStatus.className = "upload-status err";
-        folderStatus.appendChild(el("div", null, "Error " + xhr.status + ": " + detail));
-      }
-    };
-    xhr.onerror = function () {
-      if (phase) clearTimeout(phase);
-      folderRegister.disabled = false; folderCancel.disabled = false;
-      clear(folderStatus); folderStatus.className = "upload-status err";
-      folderStatus.appendChild(el("div", null, "Network error during folder registration."));
-    };
-    xhr.send(form);
-  });
-
-  function statusBadge(status) {
-    var map = {
-      "pending": ["st-pending", "pending"],
-      "partially-indexed": ["st-partial", "partially indexed"],
-      "fully-indexed": ["st-indexed", "fully indexed"]
-    };
-    var m = map[status] || ["st-pending", status || "pending"];
-    return el("span", "status-badge " + m[0], m[1]);
-  }
-
-  function renderFolder(f) {
-    var card = el("div", "card");
-    var row = el("div", "folder-card-row");
-    var cb = document.createElement("input");
-    cb.type = "checkbox"; cb.className = "fchk";
-    cb.checked = !!selectedFolderIds[f.id];
-    cb.title = "Include in search";
-    cb.addEventListener("change", function () { selectedFolderIds[f.id] = cb.checked; refreshScopeLabel(); });
-    row.appendChild(cb);
-    row.appendChild(el("span", "fname", "📁 " + (f.topic || "folder")));
-    row.appendChild(statusBadge(f.status));
-    var trash = el("button", "trash", "🗑");
-    trash.title = "Remove from registry (keeps files)";
-    trash.addEventListener("click", function () {
-      trash.disabled = true;
-      fetch("/folders/" + encodeURIComponent(f.id), { method: "DELETE" })
-        .then(function () { delete selectedFolderIds[f.id]; refreshScopeLabel(); loadFolders(); });
-    });
-    row.appendChild(trash);
-    card.appendChild(row);
-    var bits = [f.indexed_count + "/" + f.file_count + " files indexed"];
-    if (f.note) bits.push("note: " + f.note);
-    if (f.date_registered) bits.push("registered " + f.date_registered);
-    card.appendChild(el("div", "file-meta", bits.join("  ·  ")));
-    return card;
-  }
-
-  function loadFolders(cb) {
-    foldersSpin.classList.add("show");
-    fetch("/folders")
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        foldersCache = data.folders || [];
-        clear(foldersList);
-        var head = el("div", "mode-line");
-        head.appendChild(el("span", "mode-pill", "Folders"));
-        head.appendChild(el("span", null, data.count + " folder" + (data.count === 1 ? "" : "s") + " registered"));
-        foldersList.appendChild(head);
-        if (!foldersCache.length) {
-          foldersList.appendChild(el("div", "empty", "No folders registered yet. Drop a folder above to register it."));
-        } else {
-          foldersCache.forEach(function (f) { foldersList.appendChild(renderFolder(f)); });
-        }
-        refreshScopeLabel();
-        if (cb) cb();
-      })
-      .catch(function (err) {
-        clear(foldersList);
-        foldersList.appendChild(el("div", "error", "Error: " + err.message));
-      })
-      .finally(function () { foldersSpin.classList.remove("show"); });
-  }
-
-  // preload folders so scope + suggestions work from the first question
-  loadFolders();
-
-  // focus the input on load
-  qInput.focus();
+  // --- init ----------------------------------------------------------------
+  loadMode();
+  loadHealth();
+  input.focus();
 })();
 </script>
 </body>
