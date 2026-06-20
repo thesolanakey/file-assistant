@@ -219,6 +219,20 @@ def files_endpoint():
     return {"count": len(files), "files": sorted(files.values(), key=lambda f: f["filename"])}
 
 
+class SearchRequest(BaseModel):
+    query: str
+
+
+@router.post("/search")
+def search_endpoint(req: SearchRequest):
+    """Run a web search directly (used by the /search slash command)."""
+    from server import tools  # lazy import to avoid an import cycle
+
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+    return {"query": req.query, "results": tools.web_search(req.query)}
+
+
 _ALLOWED_TAGS = {"remember", "storage", "project"}
 
 

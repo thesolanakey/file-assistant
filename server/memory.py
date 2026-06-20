@@ -67,6 +67,14 @@ def count_messages() -> int:
         return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
 
 
+def clear_messages() -> int:
+    """Delete all stored messages. Returns the number removed."""
+    with db.connection() as conn:
+        n = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        conn.execute("DELETE FROM messages")
+    return n
+
+
 @router.get("/messages")
 def messages_endpoint(
     limit: int | None = Query(default=None, ge=1, le=1000),
@@ -86,3 +94,9 @@ def history_endpoint(limit: int = Query(default=100, ge=1, le=1000)):
         "count": count_messages(),
         "messages": get_messages(limit=limit),
     }
+
+
+@router.delete("/history")
+def clear_history_endpoint():
+    """Clear all conversation history (used by the /clear slash command)."""
+    return {"status": "cleared", "deleted": clear_messages()}

@@ -15,7 +15,7 @@ failing tool can't break generation.
 """
 from __future__ import annotations
 
-import html
+import json
 import logging
 import os
 import re
@@ -125,70 +125,91 @@ def self_ingest(title: str, content: str) -> str:
 
 
 # --- web_search (DuckDuckGo, no API key) ------------------------------------
-_DDG_URL = "https://html.duckduckgo.com/html/"
-# Pair each result link with its OWN snippet in one match, so titles and
-# snippets can't drift out of alignment (ad blocks are filtered by href below).
-_RESULT_RE = re.compile(
-    r'<a[^>]*class="result__a"[^>]*href="(?P<href>[^"]*)"[^>]*>(?P<title>.*?)</a>'
-    r'.*?class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
-    re.DOTALL,
-)
+_DDG_API = "https://api.duckduckgo.com/"
 
 
-def _strip_tags(s: str) -> str:
-    return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
-
-
-def _decode_ddg_href(href: str) -> str:
-    """DDG result links are /l/?uddg=<encoded-real-url> redirects; decode them."""
-    if "uddg=" in href:
-        try:
-            q = urllib.parse.urlparse(href).query
-            uddg = urllib.parse.parse_qs(q).get("uddg", [""])[0]
-            if uddg:
-                return urllib.parse.unquote(uddg)
-        except Exception:  # noqa: BLE001
-            pass
-    return href if href.startswith("http") else "https:" + href
+def _flatten_related(topics: list, out: list, limit: int) -> None:
+    """Collect (text, url) pairs from RelatedTopics, descending into the nested
+    category groups DuckDuckGo sometimes returns (a topic with a 'Topics' list)."""
+    for t in topics:
+        if len(out) >= limit:
+            return
+        if isinstance(t, dict) and "Topics" in t:
+            _flatten_related(t.get("Topics", []), out, limit)
+        elif isinstance(t, dict):
+            text = (t.get("Text") or "").strip()
+            url = t.get("FirstURL") or ""
+            if text:
+                out.append((text, url))
 
 
 def web_search(query: str, max_results: int = 5) -> str:
+    """Search via DuckDuckGo's Instant Answer API (no API key required).
+
+    GET https://api.duckduckgo.com/?q=<query>&format=json — returns instant
+    answers (direct answers, topic abstracts, definitions, related topics). The
+    relevant fields are parsed into a compact text block that is fed back into
+    the generation context.
+    """
     query = (query or "").strip()
     if not query:
         return "web_search failed: empty query."
 
-    data = urllib.parse.urlencode({"q": query}).encode("utf-8")
+    url = _DDG_API + "?" + urllib.parse.urlencode(
+        {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1", "t": "file-assistant"}
+    )
     req = urllib.request.Request(
-        _DDG_URL,
-        data=data,  # POST is the most reliable for the html endpoint
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
+        url, headers={"User-Agent": "file-assistant/1.0"}, method="GET"
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            page = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         log.warning("web_search failed: %s", exc)
         return f"web_search failed: could not reach DuckDuckGo ({exc})."
+    except json.JSONDecodeError as exc:
+        return f"web_search failed: invalid response from DuckDuckGo ({exc})."
 
-    # Organic results only — skip DuckDuckGo ad links (y.js / ad_domain).
-    organic = [
-        m for m in _RESULT_RE.finditer(page)
-        if "y.js" not in m.group("href") and "ad_domain" not in m.group("href")
-    ]
-    if not organic:
-        return f"No web results found for '{query}'."
+    lines = [f"Web search results for '{query}' (DuckDuckGo Instant Answer):"]
+    heading = (data.get("Heading") or "").strip()
 
-    lines = [f"Web search results for '{query}':"]
-    for i, m in enumerate(organic[:max_results]):
-        title = _strip_tags(m.group("title"))
-        url = _decode_ddg_href(m.group("href"))
-        snippet = _strip_tags(m.group("snippet"))
-        lines.append(f"{i + 1}. {title}\n   {url}\n   {snippet}")
+    # Direct answer (calculations, conversions, simple facts).
+    answer = (data.get("Answer") or "").strip()
+    if answer:
+        lines.append(f"Answer: {answer}")
+
+    # Topic abstract / summary.
+    abstract = (data.get("AbstractText") or data.get("Abstract") or "").strip()
+    if abstract:
+        src = (data.get("AbstractSource") or "").strip()
+        head = f"{heading}: " if heading else ""
+        lines.append(f"{head}{abstract}" + (f" [{src}]" if src else ""))
+        if data.get("AbstractURL"):
+            lines.append(f"  {data['AbstractURL']}")
+
+    # Dictionary-style definition.
+    definition = (data.get("Definition") or "").strip()
+    if definition:
+        src = (data.get("DefinitionSource") or "").strip()
+        lines.append(f"Definition: {definition}" + (f" [{src}]" if src else ""))
+        if data.get("DefinitionURL"):
+            lines.append(f"  {data['DefinitionURL']}")
+
+    # Related topics.
+    related: list = []
+    _flatten_related(data.get("RelatedTopics", []), related, max_results)
+    for text, u in related:
+        lines.append(f"- {text}" + (f"\n  {u}" if u else ""))
+
+    if len(lines) == 1:
+        # No instant answer available. Be explicit so the model reports this
+        # rather than fabricating an answer — the Instant Answer API does not
+        # serve live/real-time results (e.g. today's sports scores).
+        return (
+            f"DuckDuckGo's Instant Answer API returned no results for '{query}'. "
+            f"Note: this API does not provide live or real-time data such as "
+            f"current sports scores, news, or stock prices."
+        )
     return "\n".join(lines)
 
 

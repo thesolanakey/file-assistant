@@ -15,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from config import settings
-from server import db, generate, ingest, memory, modes, query, runtime
+from server import (
+    db, generate, ingest, ingest_url, memory, modes, process, query, runtime,
+)
 
 _BASE_DIR = os.path.dirname(__file__)
 _STATIC_DIR = os.path.join(_BASE_DIR, "static")
@@ -50,6 +52,8 @@ app.include_router(query.router)
 app.include_router(modes.router)
 app.include_router(memory.router)
 app.include_router(runtime.router)
+app.include_router(process.router)
+app.include_router(ingest_url.router)
 
 
 def _ram_percent() -> float | None:

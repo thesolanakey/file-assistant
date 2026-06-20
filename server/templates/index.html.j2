@@ -160,6 +160,11 @@
   .be { color: var(--muted); }
   .be .b-ollama { color: var(--green); } .be .b-claude { color: var(--blue); } .be .b-retrieval { color: var(--muted); }
   .empty { color: var(--muted); text-align: center; margin-top: 40px; }
+  /* slash commands: echoed command (green) + centered muted system response */
+  .msg.cmd { align-self: flex-end; align-items: flex-end; max-width: 86%; }
+  .msg.cmd .bubble { background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.45); color: var(--green); }
+  .sys-msg { align-self: center; text-align: center; max-width: 90%; color: var(--muted); font-size: 12px; white-space: pre-wrap; word-wrap: break-word; padding: 2px 0; }
+  .sys-msg b { color: var(--text); font-weight: 600; }
 
   /* ---------- RIGHT PANEL ---------- */
   .drop {
@@ -278,11 +283,6 @@
           </div>
         </div>
         <div class="upload-status" id="uploadStatus"></div>
-      </div>
-
-      <div class="section">
-        <h3>indexed files</h3>
-        <div class="files" id="files"></div>
       </div>
     </div>
   </div>
@@ -459,6 +459,16 @@
     const inp = $("chatInput");
     const text = inp.value.trim();
     if (!text || state.busy) return;
+
+    // Slash commands are handled locally, not sent to /query.
+    if (text.startsWith("/")) {
+      inp.value = "";
+      state.busy = true; $("sendBtn").disabled = true;
+      try { await handleCommand(text); }
+      finally { state.busy = false; $("sendBtn").disabled = false; inp.focus(); }
+      return;
+    }
+
     state.busy = true; $("sendBtn").disabled = true;
     addUser(text); inp.value = "";
     const ph = addAiPlaceholder();
@@ -474,6 +484,110 @@
   }
   $("sendBtn").addEventListener("click", send);
   $("chatInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
+
+  // ---------- slash commands ----------
+  function addCmd(text) {
+    const e = $("empty"); if (e) e.remove();
+    const m = el("div", "msg cmd"); m.appendChild(el("div", "bubble", text));
+    $("chat").appendChild(m); scrollDown();
+  }
+  function addSys(text) {
+    const e = $("empty"); if (e) e.remove();
+    const m = el("div", "sys-msg", text);
+    $("chat").appendChild(m); scrollDown();
+    return m;
+  }
+
+  const HELP = [
+    ["/search <query>", "web search, results in chat"],
+    ["/tag <file> remember|storage|project", "tag an indexed file"],
+    ["/process <file>", "Claude pipeline: summary + Q&A + facts"],
+    ["/dataset <file> qa|facts|summary", "build one dataset from a file"],
+    ["/ingest <url>", "fetch a URL and ingest it"],
+    ["/mode local|hetzner", "switch operational mode"],
+    ["/backend ollama|claude", "switch generation backend"],
+    ["/files", "list indexed files"],
+    ["/clear", "clear conversation history"],
+    ["/help", "show this list"],
+  ];
+
+  async function handleCommand(raw) {
+    addCmd(raw);
+    const parts = raw.slice(1).trim().split(/\s+/);
+    const cmd = (parts[0] || "").toLowerCase();
+    const rest = raw.slice(1).trim().slice(cmd.length).trim();
+    const out = addSys("…");
+
+    try {
+      if (cmd === "help") {
+        out.innerHTML = "// commands<br/>" +
+          HELP.map(h => '<b>' + h[0].replace(/</g,"&lt;").replace(/>/g,"&gt;") + '</b> — ' + h[1]).join("<br/>");
+
+      } else if (cmd === "search") {
+        if (!rest) return void (out.textContent = "// usage: /search <query>");
+        const d = await api("POST", "/search", { query: rest });
+        out.textContent = d.results || "// no results";
+
+      } else if (cmd === "tag") {
+        const [fn, tag] = [parts[1], parts[2]];
+        if (!fn || !tag) return void (out.textContent = "// usage: /tag <filename> remember|storage|project");
+        await api("POST", "/files/" + encodeURIComponent(fn) + "/tag", { tag });
+        out.textContent = "// tagged " + fn + " → " + tag;
+
+      } else if (cmd === "process") {
+        if (!parts[1]) return void (out.textContent = "// usage: /process <filename>");
+        out.textContent = "// processing " + parts[1] + " with Claude…";
+        const d = await api("POST", "/process", { filename: parts[1] });
+        out.textContent = "// created: " + (d.created || []).join(", ");
+
+      } else if (cmd === "dataset") {
+        const [fn, type] = [parts[1], parts[2]];
+        if (!fn || !["qa", "facts", "summary"].includes(type || ""))
+          return void (out.textContent = "// usage: /dataset <filename> qa|facts|summary");
+        out.textContent = "// building " + type + " dataset from " + fn + "…";
+        const d = await api("POST", "/dataset", { filename: fn, type });
+        out.textContent = "// created: " + (d.created || d.file || "");
+
+      } else if (cmd === "ingest") {
+        if (!rest) return void (out.textContent = "// usage: /ingest <url>");
+        out.textContent = "// fetching " + rest + "…";
+        const d = await api("POST", "/ingest-url", { url: rest });
+        out.textContent = "// ingested " + (d.filename || "") + " (~" + (d.estimated_chunks ?? "?") + " chunks)";
+
+      } else if (cmd === "mode") {
+        const v = (parts[1] || "").toLowerCase();
+        if (!["local", "hetzner"].includes(v)) return void (out.textContent = "// usage: /mode local|hetzner");
+        await api("POST", "/mode", { mode: v });
+        state.mode = v; setDDLabel($("ddMode"), v, true); paintTopbar();
+        out.textContent = "// mode → " + v;
+
+      } else if (cmd === "backend") {
+        const v = (parts[1] || "").toLowerCase();
+        if (!["ollama", "claude"].includes(v)) return void (out.textContent = "// usage: /backend ollama|claude");
+        await api("POST", "/config", { backend: v });
+        state.backend = v; setDDLabel($("ddBackend"), v, false); paintTopbar();
+        out.textContent = "// backend → " + v;
+
+      } else if (cmd === "files") {
+        const d = await api("GET", "/files");
+        out.textContent = d.count
+          ? "// " + d.count + " indexed file(s):\n" + d.files.map(f => "  " + f.filename + " (" + (f.chunks || 0) + " chunks" + (f.tag ? ", " + f.tag : "") + ")").join("\n")
+          : "// no indexed files";
+
+      } else if (cmd === "clear") {
+        await api("DELETE", "/history");
+        $("chat").innerHTML = "";
+        addSys("// history cleared");
+
+      } else {
+        out.textContent = "// unknown command — type /help";
+      }
+    } catch (e) {
+      out.textContent = "// error: " + e.message;
+    } finally {
+      scrollDown(); poll();
+    }
+  }
 
   // ---------- history ----------
   async function loadHistory() {
@@ -496,43 +610,6 @@
     } catch (e) { /* ignore */ }
   }
 
-  // ---------- files ----------
-  const TAGS = ["remember", "storage", "project"];
-  async function loadFiles() {
-    try {
-      const d = await api("GET", "/files");
-      const wrap = $("files"); wrap.innerHTML = "";
-      if (!d.files || !d.files.length) { wrap.appendChild(el("div", "k", "// none")); return; }
-      d.files.forEach(f => {
-        const card = el("div", "file");
-        const fn = el("div", "fn"); fn.innerHTML = f.filename + ' <span class="ck">(' + (f.chunks || 0) + ")</span>";
-        card.appendChild(fn);
-        const dd = buildTagDD(f.filename, f.tag || "");
-        card.appendChild(dd);
-        wrap.appendChild(card);
-      });
-    } catch (e) { /* ignore */ }
-  }
-  function buildTagDD(filename, current) {
-    const dd = el("div", "dd");
-    const btn = el("button", "dd-btn");
-    btn.innerHTML = '<span class="cur">' + (current || "tag…") + '</span><span class="caret">▾</span>';
-    const menu = el("div", "dd-menu");
-    TAGS.forEach(t => {
-      const o = el("div", "dd-opt" + (t === current ? " sel" : ""), t);
-      o.addEventListener("click", async (e) => {
-        e.stopPropagation(); dd.classList.remove("open");
-        btn.querySelector(".cur").textContent = t;
-        try { await api("POST", "/files/" + encodeURIComponent(filename) + "/tag", { tag: t }); }
-        catch (err) { console.warn(err); }
-      });
-      menu.appendChild(o);
-    });
-    btn.addEventListener("click", (e) => { e.stopPropagation(); const open = dd.classList.contains("open"); closeAllDD(); dd.classList.toggle("open", !open); });
-    dd.appendChild(btn); dd.appendChild(menu);
-    return dd;
-  }
-
   // ---------- upload ----------
   async function uploadFile(file) {
     if (!file) return;
@@ -545,7 +622,7 @@
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
       st.textContent = (d.status || "ingested") + ": " + (d.filename || file.name);
-      loadFiles(); poll();
+      poll();
     } catch (e) { st.textContent = "error: " + e.message; }
   }
   const drop = $("drop"), fileInput = $("fileInput");
@@ -566,7 +643,6 @@
   }
   applyInitial();
   loadHistory();
-  loadFiles();
   poll();
   setInterval(poll, 5000);
   $("chatInput").focus();

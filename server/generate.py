@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 
@@ -134,6 +135,35 @@ class OllamaUnavailable(Exception):
 _MAX_TOOL_ROUNDS = 5
 
 
+def _parse_text_tool_call(content: str) -> dict | None:
+    """Recover a tool call that the model emitted as JSON *text* in its content
+    instead of in the structured ``tool_calls`` field (llama3.2 does this
+    inconsistently). Returns a structured call dict, or None if not a tool call.
+    """
+    s = (content or "").strip()
+    if not s.startswith("{") and not s.startswith("["):
+        # Strip a ```json … ``` fence if present, else give up fast.
+        m = re.search(r"\{.*\}", s, re.DOTALL)
+        if not m:
+            return None
+        s = m.group(0)
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(obj, list):
+        obj = obj[0] if obj else None
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    args = obj.get("arguments")
+    if args is None:
+        args = obj.get("parameters")
+    if isinstance(name, str) and isinstance(args, dict):
+        return {"function": {"name": name, "arguments": args}}
+    return None
+
+
 def _ollama_chat(messages: list[dict], tools: list[dict] | None) -> dict:
     """POST one round to Ollama's /api/chat and return the parsed response.
 
@@ -179,6 +209,14 @@ def ollama_generate(question: str, context: str, mode: str | None, history: list
         data = _ollama_chat(messages, tools.TOOL_SCHEMAS)
         msg = data.get("message", {}) or {}
         tool_calls = msg.get("tool_calls") or []
+
+        # Fallback: some models emit the tool call as JSON text in `content`
+        # rather than in the structured tool_calls field — recover it.
+        if not tool_calls:
+            recovered = _parse_text_tool_call(msg.get("content", ""))
+            if recovered:
+                tool_calls = [recovered]
+                msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
 
         if not tool_calls:
             _record_tps(data)
