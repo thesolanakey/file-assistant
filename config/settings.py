@@ -39,9 +39,25 @@ if GENERATION_BACKEND not in _ALLOWED_BACKENDS:
         f"got {GENERATION_BACKEND!r}"
     )
 
-# --- Qdrant -----------------------------------------------------------------
+# --- Qdrant (dual: local + hetzner) -----------------------------------------
+# Two Qdrant instances, selected by the active operational mode (see
+# server/modes.py): local mode talks to the local Qdrant, hetzner mode to the
+# remote one. The legacy QDRANT_HOST/QDRANT_PORT are kept as the default for the
+# local instance for backward compatibility.
 QDRANT_HOST: str = _get("QDRANT_HOST", "qdrant")
 QDRANT_PORT: int = int(_get("QDRANT_PORT", "6333"))
+
+QDRANT_HOST_LOCAL: str = os.getenv("QDRANT_HOST_LOCAL", QDRANT_HOST)
+QDRANT_PORT_LOCAL: int = int(os.getenv("QDRANT_PORT_LOCAL", str(QDRANT_PORT)))
+QDRANT_HOST_HETZNER: str = os.getenv("QDRANT_HOST_HETZNER", "46.62.202.18")
+QDRANT_PORT_HETZNER: int = int(os.getenv("QDRANT_PORT_HETZNER", "6333"))
+
+# mode -> (host, port). Used by server.ingest.get_qdrant() to pick a client.
+QDRANT_BY_MODE: dict[str, tuple[str, int]] = {
+    "local": (QDRANT_HOST_LOCAL, QDRANT_PORT_LOCAL),
+    "hetzner": (QDRANT_HOST_HETZNER, QDRANT_PORT_HETZNER),
+}
+
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "files")
 # Registry of registered folders/files for lazy (on-demand) indexing.
 QDRANT_REGISTRY_COLLECTION: str = os.getenv("QDRANT_REGISTRY_COLLECTION", "registry")

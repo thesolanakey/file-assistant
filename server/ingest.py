@@ -27,7 +27,9 @@ from server.parsers import parse_file
 
 router = APIRouter()
 
-_qdrant: QdrantClient | None = None
+# One cached QdrantClient per operational mode ("local" / "hetzner"). Clients
+# are built lazily on first use so an unreachable remote never blocks startup.
+_qdrant_clients: dict[str, QdrantClient] = {}
 _qdrant_lock = threading.Lock()
 
 # Absolute paths currently being ingested via /upload. The file watcher skips
@@ -39,22 +41,43 @@ _SKIP_EXTENSIONS = {".pyc", ".db"}
 _SKIP_NAMES = {".gitkeep"}
 
 
-def get_qdrant() -> QdrantClient:
-    """Return the shared QdrantClient, creating it on first use."""
-    global _qdrant
-    if _qdrant is None:
+def get_qdrant(mode: str | None = None) -> QdrantClient:
+    """Return the QdrantClient for ``mode`` (the active mode if not given).
+
+    local mode -> local Qdrant, hetzner mode -> remote Qdrant. Each client is
+    created once and cached; queries and ingestion both route to the client for
+    whichever mode is currently active.
+    """
+    if mode is None:
+        # Lazy import avoids a circular import at module load time.
+        from server import modes
+
+        mode = modes.get_mode()
+    if mode not in settings.QDRANT_BY_MODE:
+        mode = settings.DEFAULT_MODE
+
+    client = _qdrant_clients.get(mode)
+    if client is None:
         with _qdrant_lock:
-            if _qdrant is None:
-                _qdrant = QdrantClient(
-                    host=settings.QDRANT_HOST,
-                    port=settings.QDRANT_PORT,
-                )
-    return _qdrant
+            client = _qdrant_clients.get(mode)
+            if client is None:
+                host, port = settings.QDRANT_BY_MODE[mode]
+                client = QdrantClient(host=host, port=port)
+                _qdrant_clients[mode] = client
+                # Best-effort: provision collections on a freshly-used Qdrant so
+                # switching modes works against an empty instance. If the target
+                # is unreachable, let the later query surface the error clearly.
+                try:
+                    ensure_collection(client)
+                    ensure_registry_collection(client)
+                except Exception:  # noqa: BLE001
+                    pass
+    return client
 
 
-def ensure_collection() -> None:
+def ensure_collection(client: QdrantClient | None = None) -> None:
     """Create the `files` collection (768-dim, cosine) if it does not exist."""
-    client = get_qdrant()
+    client = client or get_qdrant()
     existing = {c.name for c in client.get_collections().collections}
     if settings.QDRANT_COLLECTION not in existing:
         client.create_collection(
@@ -334,8 +357,8 @@ _BINARY_EXTS = {
 }
 
 
-def ensure_registry_collection() -> None:
-    client = get_qdrant()
+def ensure_registry_collection(client: QdrantClient | None = None) -> None:
+    client = client or get_qdrant()
     existing = {c.name for c in client.get_collections().collections}
     if settings.QDRANT_REGISTRY_COLLECTION not in existing:
         client.create_collection(
