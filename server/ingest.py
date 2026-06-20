@@ -27,7 +27,7 @@ from server.parsers import parse_file
 
 router = APIRouter()
 
-# One cached QdrantClient per operational mode ("local" / "hetzner"). Clients
+# One cached QdrantClient per operational mode ("local" / "brix"). Clients
 # are built lazily on first use so an unreachable remote never blocks startup.
 _qdrant_clients: dict[str, QdrantClient] = {}
 _qdrant_lock = threading.Lock()
@@ -44,7 +44,7 @@ _SKIP_NAMES = {".gitkeep"}
 def get_qdrant(mode: str | None = None) -> QdrantClient:
     """Return the QdrantClient for ``mode`` (the active mode if not given).
 
-    local mode -> local Qdrant, hetzner mode -> remote Qdrant. Each client is
+    local mode -> local Qdrant, brix mode -> remote Qdrant. Each client is
     created once and cached; queries and ingestion both route to the client for
     whichever mode is currently active.
     """
@@ -212,7 +212,7 @@ def ingest_path(
     query about the file's description retrieves it) and stored on every point's
     payload as ``note``. ``folder`` is stored on the payload; if omitted it is
     derived from the file's location under WATCH_DIR. ``mode`` selects which
-    Qdrant instance to store into ("local"/"hetzner"); when omitted the active
+    Qdrant instance to store into ("local"/"brix"); when omitted the active
     mode is used.
     """
     if not os.path.isfile(path):
@@ -419,7 +419,7 @@ def _registry_scroll(must):
 def check_duplicate(file_hash: str, filename: str, mode: str | None = None) -> tuple[str, dict | None]:
     """Check registry + files collection for a matching file_hash / filename.
 
-    ``mode`` selects which Qdrant instance to check against ("local"/"hetzner");
+    ``mode`` selects which Qdrant instance to check against ("local"/"brix");
     when omitted the active mode is used. The dedup check must run against the
     same instance the file will be stored into.
 
@@ -709,7 +709,7 @@ async def upload_endpoint(
     """Accept a multipart upload (file + note), save it to watch/documents/,
     and ingest it with the note stored/searchable alongside the file.
 
-    ``destination`` ("local"/"hetzner") selects which Qdrant instance the file is
+    ``destination`` ("local"/"brix") selects which Qdrant instance the file is
     indexed into; when blank/unknown the active mode is used (unchanged behaviour).
     """
     if not file.filename:

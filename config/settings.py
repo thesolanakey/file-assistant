@@ -39,9 +39,9 @@ if GENERATION_BACKEND not in _ALLOWED_BACKENDS:
         f"got {GENERATION_BACKEND!r}"
     )
 
-# --- Qdrant (dual: local + hetzner) -----------------------------------------
+# --- Qdrant (dual: local + brix) -----------------------------------------
 # Two Qdrant instances, selected by the active operational mode (see
-# server/modes.py): local mode talks to the local Qdrant, hetzner mode to the
+# server/modes.py): local mode talks to the local Qdrant, brix mode to the
 # remote one. The legacy QDRANT_HOST/QDRANT_PORT are kept as the default for the
 # local instance for backward compatibility.
 QDRANT_HOST: str = _get("QDRANT_HOST", "qdrant")
@@ -49,13 +49,13 @@ QDRANT_PORT: int = int(_get("QDRANT_PORT", "6333"))
 
 QDRANT_HOST_LOCAL: str = os.getenv("QDRANT_HOST_LOCAL", QDRANT_HOST)
 QDRANT_PORT_LOCAL: int = int(os.getenv("QDRANT_PORT_LOCAL", str(QDRANT_PORT)))
-QDRANT_HOST_HETZNER: str = os.getenv("QDRANT_HOST_HETZNER", "46.62.202.18")
-QDRANT_PORT_HETZNER: int = int(os.getenv("QDRANT_PORT_HETZNER", "6333"))
+QDRANT_HOST_BRIX: str = os.getenv("QDRANT_HOST_BRIX", "46.62.202.18")
+QDRANT_PORT_BRIX: int = int(os.getenv("QDRANT_PORT_BRIX", "6333"))
 
 # mode -> (host, port). Used by server.ingest.get_qdrant() to pick a client.
 QDRANT_BY_MODE: dict[str, tuple[str, int]] = {
     "local": (QDRANT_HOST_LOCAL, QDRANT_PORT_LOCAL),
-    "hetzner": (QDRANT_HOST_HETZNER, QDRANT_PORT_HETZNER),
+    "brix": (QDRANT_HOST_BRIX, QDRANT_PORT_BRIX),
 }
 
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "files")
@@ -75,7 +75,7 @@ EMBED_DIM: int = int(os.getenv("EMBED_DIM", "768"))
 # generation backend and of the query intent (find/summarize). The active mode
 # is persisted to SQLite (see server/modes.py) so it survives restarts; this
 # value is only the fallback used the very first time, before anything is saved.
-ALLOWED_MODES = {"local", "hetzner"}
+ALLOWED_MODES = {"local", "brix"}
 DEFAULT_MODE: str = _get("DEFAULT_MODE", "local").strip().lower()
 if DEFAULT_MODE not in ALLOWED_MODES:
     raise ValueError(

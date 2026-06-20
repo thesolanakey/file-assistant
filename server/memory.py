@@ -5,7 +5,7 @@ table and kept forever. A message records:
 
   * ``role``       — "user" or "assistant"
   * ``content``    — the message text
-  * ``mode``       — the active operational mode ("local"/"hetzner") at the time
+  * ``mode``       — the active operational mode ("local"/"brix") at the time
   * ``created_at`` — ISO-8601 UTC timestamp
 
 A ``GET /messages`` endpoint is exposed so the stored history can be read back
@@ -98,5 +98,9 @@ def history_endpoint(limit: int = Query(default=100, ge=1, le=1000)):
 
 @router.delete("/history")
 def clear_history_endpoint():
-    """Clear all conversation history (used by the /clear slash command)."""
-    return {"status": "cleared", "deleted": clear_messages()}
+    """Clear all stored conversation history. Returns {"status": "ok"}.
+
+    Called by the UI's "new chat" button.
+    """
+    clear_messages()
+    return {"status": "ok"}

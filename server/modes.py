@@ -1,4 +1,4 @@
-"""Operational mode: "local" vs "hetzner".
+"""Operational mode: "local" vs "brix".
 
 A single named runtime mode for the assistant, independent of the generation
 backend and of the query intent (find/summarize). The active mode is persisted
@@ -7,8 +7,8 @@ restarts. On first run (nothing stored yet) it falls back to
 ``settings.DEFAULT_MODE``.
 
 Endpoints:
-  * ``GET  /mode``  -> {"mode": "local"|"hetzner"}
-  * ``POST /mode``  {"mode": "local"|"hetzner"} -> {"mode": ..., "previous": ...}
+  * ``GET  /mode``  -> {"mode": "local"|"brix"}
+  * ``POST /mode``  {"mode": "local"|"brix"} -> {"mode": ..., "previous": ...}
 """
 from __future__ import annotations
 

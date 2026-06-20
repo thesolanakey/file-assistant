@@ -4,7 +4,7 @@ Public entry point::
 
     generate(question, context, mode, history) -> {"answer": str, "backend": str}
 
-The active operational mode (local/hetzner) selects a personality (system
+The active operational mode (local/brix) selects a personality (system
 prompt). The last N messages of conversation history and the retrieved RAG
 chunks are assembled into the prompt in this order::
 
@@ -44,7 +44,7 @@ MODE_SYSTEM_PROMPTS = {
         "context and conversation history, and if something isn't there, just "
         "say so plainly."
     ),
-    "hetzner": (
+    "brix": (
         "You are a technical research assistant. Your tone is precise, rigorous, "
         "and grounded in the source literature. Base every claim on the retrieved "
         "documents and cite source filenames in brackets, e.g. [paper.pdf], when "

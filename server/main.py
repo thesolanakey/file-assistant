@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     db.init_db()
     # Best-effort: provision collections for the active mode's Qdrant. This must
     # NOT crash startup — if the active mode points at an unreachable instance
-    # (e.g. hetzner remote is down), the app should still boot; collections are
+    # (e.g. brix remote is down), the app should still boot; collections are
     # ensured lazily when that Qdrant is first reached (see ingest.get_qdrant).
     try:
         ingest.ensure_collection()

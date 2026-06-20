@@ -1,7 +1,7 @@
 """Query API: vector search with find/summarize intent detection.
 
 Endpoints:
-  - POST /query   {"question": str, "filters": {}}  -> chunks or summary
+  - POST /query   {"message": str, "filters": {}}  -> chunks or summary
   - GET  /files                                      -> indexed files + metadata
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ _SUMMARIZE_KEYWORDS = ("summarize", "explain", "overview", "tldr")
 
 
 class QueryRequest(BaseModel):
-    question: str
+    message: str
     filters: dict = Field(default_factory=dict)
     folder_ids: list[str] = Field(default_factory=list)
 
@@ -81,17 +81,17 @@ def _assistant_content(response: dict) -> str:
 
 @router.post("/query")
 def query_endpoint(req: QueryRequest):
-    if not req.question.strip():
-        raise HTTPException(status_code=400, detail="question must not be empty")
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="message must not be empty")
 
-    # Active operational mode (local/hetzner) is recorded with every message.
+    # Active operational mode (local/brix) is recorded with every message.
     active_mode = modes.get_mode()
     # Snapshot prior history BEFORE logging the current question, so generation
     # sees "conversation so far" without the current turn duplicated in it.
     history = memory.get_messages(limit=HISTORY_LIMIT)
-    memory.add_message("user", req.question, active_mode)
+    memory.add_message("user", req.message, active_mode)
 
-    mode = _detect_mode(req.question)
+    mode = _detect_mode(req.message)
     folder_ids = req.folder_ids or []
     # Map requested folder ids -> their topics so we can scope the vector search.
     folder_topics = ingest._folder_topics(folder_ids) if folder_ids else set()
@@ -99,17 +99,17 @@ def query_endpoint(req: QueryRequest):
     embedded_now = 0
     try:
         # Step 1: search what's already indexed (scoped if folders requested).
-        hits = _search(req.question, req.filters, folder_topics)
+        hits = _search(req.message, req.filters, folder_topics)
         top_score = hits[0].score if hits else 0.0
 
         # Step 2: if scope was requested, or confidence is low, pull in matching
         # pending files from the registry and embed them on demand.
         if folder_ids or top_score < _CONFIDENCE_THRESHOLD:
-            info = ingest.embed_on_demand(req.question, folder_ids or None)
+            info = ingest.embed_on_demand(req.message, folder_ids or None)
             embedded_now = info.get("indexed", 0)
             if embedded_now:
                 # Step 6: re-search now that new content is indexed.
-                hits = _search(req.question, req.filters, folder_topics)
+                hits = _search(req.message, req.filters, folder_topics)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"search failed: {exc}")
 
@@ -131,7 +131,7 @@ def query_endpoint(req: QueryRequest):
         response = {
             "mode": "find",
             "active_mode": active_mode,
-            "question": req.question,
+            "question": req.message,
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "chunks": chunks,
             "embedded_on_demand": embedded_now,
@@ -144,7 +144,7 @@ def query_endpoint(req: QueryRequest):
         response = {
             "mode": "summarize",
             "active_mode": active_mode,
-            "question": req.question,
+            "question": req.message,
             "answer": "No relevant content was found in the indexed files.",
             "sources": [],
             "backend": "retrieval",
@@ -158,14 +158,14 @@ def query_endpoint(req: QueryRequest):
         )
         try:
             result = generate.generate(
-                req.question, context, mode=active_mode, history=history
+                req.message, context, mode=active_mode, history=history
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
         response = {
             "mode": "summarize",
             "active_mode": active_mode,
-            "question": req.question,
+            "question": req.message,
             "answer": result["answer"],
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "embedded_on_demand": embedded_now,
