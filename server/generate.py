@@ -21,8 +21,17 @@ import urllib.error
 import urllib.request
 
 from config import settings
+from server import runtime
 
 log = logging.getLogger("generate")
+
+# Tokens/sec of the most recent Ollama generation, surfaced in /health and on
+# /query responses. None until the first Ollama generation completes.
+_last_tps: float | None = None
+
+
+def last_tps() -> float | None:
+    return _last_tps
 
 # Per-mode personalities. Keyed by the operational mode (see server/modes.py).
 MODE_SYSTEM_PROMPTS = {
@@ -46,6 +55,20 @@ MODE_SYSTEM_PROMPTS = {
 
 # Fallback personality if an unknown mode is ever passed.
 _DEFAULT_MODE = "local"
+
+# Appended to the system message for the Ollama (tool-capable) path only — tells
+# the model the tools exist and the policy for using them. Claude does not get
+# this (it is not offered these tools).
+_TOOLS_GUIDANCE = (
+    "\n\nYou have two tools. Use them deliberately, not in every reply:\n"
+    "- web_search(query): when answering needs information that is not in the "
+    "provided context and that you are unsure about or that may be recent or "
+    "current, call web_search first and base your answer on the results.\n"
+    "- self_ingest(title, content): when the conversation produces a genuinely "
+    "useful, durable fact, decision, or summary worth recalling in future "
+    "conversations, call self_ingest to save it to memory. Use this SPARINGLY — "
+    "only for information clearly worth keeping, never for routine answers."
+)
 
 
 def system_prompt_for(mode: str | None) -> str:
@@ -107,39 +130,89 @@ class OllamaUnavailable(Exception):
     """
 
 
-def ollama_generate(question: str, context: str, mode: str | None, history: list[dict] | None) -> str:
-    """Generate via Ollama's /api/generate endpoint.
+# Safety cap on tool-call rounds so a misbehaving model can't loop forever.
+_MAX_TOOL_ROUNDS = 5
 
-    This is a complete implementation, not a no-op: the moment an Ollama server
-    is reachable at ``OLLAMA_HOST`` serving ``OLLAMA_MODEL``, switching
-    ``GENERATION_BACKEND=ollama`` works with no further code changes. Until then
-    the call raises :class:`OllamaUnavailable` and the dispatcher falls back.
+
+def _ollama_chat(messages: list[dict], tools: list[dict] | None) -> dict:
+    """POST one round to Ollama's /api/chat and return the parsed response.
+
+    Raises :class:`OllamaUnavailable` on any connection/transport problem so the
+    dispatcher can fall back to Claude.
     """
-    url = settings.OLLAMA_HOST.rstrip("/") + "/api/generate"
-    payload = json.dumps(
-        {
-            "model": settings.OLLAMA_MODEL,
-            "system": system_prompt_for(mode),
-            "prompt": build_prompt(question, context, history),
-            "stream": False,
-        }
-    ).encode("utf-8")
+    url = settings.OLLAMA_HOST.rstrip("/") + "/api/chat"
+    body: dict = {"model": runtime.get_model(), "messages": messages, "stream": False}
+    if tools:
+        body["tools"] = tools
     req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=settings.OLLAMA_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
-        # Connection refused, DNS failure, timeout, server down, etc.
         raise OllamaUnavailable(str(exc)) from exc
     except json.JSONDecodeError as exc:
         raise OllamaUnavailable(f"invalid response from Ollama: {exc}") from exc
 
-    answer = data.get("response", "")
-    if not answer:
-        raise OllamaUnavailable("Ollama returned an empty response")
-    return answer
+
+def ollama_generate(question: str, context: str, mode: str | None, history: list[dict] | None) -> str:
+    """Generate via Ollama's /api/chat endpoint, with tool calling.
+
+    The model is offered the tools in :data:`server.tools.TOOL_SCHEMAS`. When it
+    emits ``tool_calls`` we execute each one, feed the results back as ``tool``
+    messages, and let the model continue — looping until it returns a plain text
+    answer (or the safety cap is hit). Any connection problem raises
+    :class:`OllamaUnavailable`, and the dispatcher falls back to Claude.
+    """
+    from server import tools  # lazy import to avoid an import cycle
+
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt_for(mode) + _TOOLS_GUIDANCE},
+        {"role": "user", "content": build_prompt(question, context, history)},
+    ]
+
+    for _ in range(_MAX_TOOL_ROUNDS):
+        data = _ollama_chat(messages, tools.TOOL_SCHEMAS)
+        msg = data.get("message", {}) or {}
+        tool_calls = msg.get("tool_calls") or []
+
+        if not tool_calls:
+            _record_tps(data)
+            return msg.get("content", "") or ""
+
+        # Record the assistant's tool-call turn, then execute each tool and
+        # append its result so the model can use it on the next round.
+        messages.append(msg)
+        for call in tool_calls:
+            fn = call.get("function", {}) or {}
+            name = fn.get("name", "")
+            args = fn.get("arguments", {}) or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            print(f"[tool] {name}({', '.join(args.keys())})", flush=True)
+            result = tools.execute_tool(name, args)
+            messages.append({"role": "tool", "tool_name": name, "content": result})
+
+    # Tool budget exhausted — ask once more with tools disabled to force a reply.
+    data = _ollama_chat(messages, None)
+    _record_tps(data)
+    return (data.get("message", {}) or {}).get("content", "") or ""
+
+
+def _record_tps(data: dict) -> None:
+    """Stash tokens/sec from an Ollama response (eval_count / eval_duration)."""
+    global _last_tps
+    count = data.get("eval_count")
+    dur_ns = data.get("eval_duration")
+    if count and dur_ns:
+        _last_tps = round(count / (dur_ns / 1e9), 1)
 
 
 # --- Dispatch ---------------------------------------------------------------
@@ -151,23 +224,28 @@ def generate(
 ) -> dict:
     """Generate an answer with the configured backend.
 
-    Returns ``{"answer": str, "backend": str}`` where ``backend`` is the backend
-    that *actually* produced the text. With ``GENERATION_BACKEND=ollama``, an
-    unreachable Ollama transparently falls back to Claude.
+    Returns ``{"answer": str, "backend": str, "tps": float|None}`` where
+    ``backend`` is the backend that *actually* produced the text. The backend,
+    model and fallback policy are read from the runtime config (server/runtime),
+    so the UI's POST /config takes effect immediately. When backend is "ollama"
+    and the auto-fallback toggle is on, an unreachable Ollama falls back to
+    Claude.
     """
-    backend = settings.GENERATION_BACKEND
+    backend = runtime.get_backend()
     if backend == "ollama":
         try:
-            return {
-                "answer": ollama_generate(question, context, mode, history),
-                "backend": "ollama",
-            }
+            answer = ollama_generate(question, context, mode, history)
+            return {"answer": answer, "backend": "ollama", "tps": _last_tps}
         except OllamaUnavailable as exc:
+            if not runtime.get_fallback():
+                raise
             log.warning("falling back to Claude (Ollama unavailable: %s)", exc)
-            return {
-                "answer": claude_generate(question, context, mode, history),
-                "backend": "claude",
-            }
+            answer = claude_generate(question, context, mode, history)
+            return {"answer": answer, "backend": "claude", "tps": None}
     if backend == "claude":
-        return {"answer": claude_generate(question, context, mode, history), "backend": "claude"}
-    raise ValueError(f"Unknown GENERATION_BACKEND: {backend!r}")
+        return {
+            "answer": claude_generate(question, context, mode, history),
+            "backend": "claude",
+            "tps": None,
+        }
+    raise ValueError(f"Unknown backend: {backend!r}")

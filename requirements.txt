@@ -7,6 +7,9 @@ python-multipart==0.0.20
 # Config
 python-dotenv==1.0.1
 
+# Templating (chat UI served at /)
+jinja2==3.1.4
+
 # Vector DB client
 qdrant-client==1.12.2
 

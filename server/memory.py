@@ -77,3 +77,12 @@ def messages_endpoint(
         "count": count_messages(),
         "messages": get_messages(limit=limit, mode=mode),
     }
+
+
+@router.get("/history")
+def history_endpoint(limit: int = Query(default=100, ge=1, le=1000)):
+    """Conversation history for the chat UI (oldest first, most recent N)."""
+    return {
+        "count": count_messages(),
+        "messages": get_messages(limit=limit),
+    }

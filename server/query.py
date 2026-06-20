@@ -130,21 +130,25 @@ def query_endpoint(req: QueryRequest):
     if mode == "find":
         response = {
             "mode": "find",
+            "active_mode": active_mode,
             "question": req.question,
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "chunks": chunks,
             "embedded_on_demand": embedded_now,
             # find mode is pure retrieval — no LLM produced this answer.
             "backend": "retrieval",
+            "tps": None,
         }
     elif not chunks:
         # summarize mode, but nothing relevant was retrieved.
         response = {
             "mode": "summarize",
+            "active_mode": active_mode,
             "question": req.question,
             "answer": "No relevant content was found in the indexed files.",
             "sources": [],
             "backend": "retrieval",
+            "tps": None,
         }
     else:
         # summarize mode -> hand the retrieved context to the generation layer,
@@ -160,11 +164,13 @@ def query_endpoint(req: QueryRequest):
             raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
         response = {
             "mode": "summarize",
+            "active_mode": active_mode,
             "question": req.question,
             "answer": result["answer"],
             "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
             "embedded_on_demand": embedded_now,
             "backend": result["backend"],
+            "tps": result.get("tps"),
         }
 
     memory.add_message("assistant", _assistant_content(response), active_mode)
@@ -202,6 +208,7 @@ def files_endpoint():
                     "folder": payload.get("folder", payload.get("source")),
                     "note": payload.get("note", ""),
                     "date_ingested": payload.get("date_ingested"),
+                    "tag": payload.get("tag", ""),
                     "chunks": 0,
                 },
             )
@@ -210,3 +217,29 @@ def files_endpoint():
             break
 
     return {"count": len(files), "files": sorted(files.values(), key=lambda f: f["filename"])}
+
+
+_ALLOWED_TAGS = {"remember", "storage", "project"}
+
+
+class TagRequest(BaseModel):
+    tag: str
+
+
+@router.post("/files/{filename}/tag")
+def tag_file_endpoint(filename: str, req: TagRequest):
+    """Set a tag (remember/storage/project) on every chunk of a given file."""
+    tag = req.tag.strip().lower()
+    if tag not in _ALLOWED_TAGS:
+        raise HTTPException(
+            status_code=400, detail=f"tag must be one of {sorted(_ALLOWED_TAGS)}"
+        )
+    client = get_qdrant()
+    client.set_payload(
+        collection_name=settings.QDRANT_COLLECTION,
+        payload={"tag": tag},
+        points=qmodels.Filter(
+            must=[qmodels.FieldCondition(key="filename", match=qmodels.MatchValue(value=filename))]
+        ),
+    )
+    return {"filename": filename, "tag": tag}

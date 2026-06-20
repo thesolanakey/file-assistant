@@ -179,9 +179,9 @@ def file_md5(path: str) -> str:
     return h.hexdigest()
 
 
-def _already_ingested(filename: str, filesize: int) -> bool:
+def _already_ingested(filename: str, filesize: int, client: QdrantClient | None = None) -> bool:
     """Dedup check: is a point with this filename+size already stored?"""
-    client = get_qdrant()
+    client = client or get_qdrant()
     result = client.scroll(
         collection_name=settings.QDRANT_COLLECTION,
         scroll_filter=qmodels.Filter(
@@ -200,13 +200,20 @@ def _already_ingested(filename: str, filesize: int) -> bool:
     return len(points) > 0
 
 
-def ingest_path(path: str, note: str | None = None, folder: str | None = None) -> dict:
+def ingest_path(
+    path: str,
+    note: str | None = None,
+    folder: str | None = None,
+    mode: str | None = None,
+) -> dict:
     """Parse, chunk, embed, and store a single file. Returns a status dict.
 
     If ``note`` is provided it is embedded as its own searchable chunk (so a
     query about the file's description retrieves it) and stored on every point's
     payload as ``note``. ``folder`` is stored on the payload; if omitted it is
-    derived from the file's location under WATCH_DIR.
+    derived from the file's location under WATCH_DIR. ``mode`` selects which
+    Qdrant instance to store into ("local"/"hetzner"); when omitted the active
+    mode is used.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -216,8 +223,9 @@ def ingest_path(path: str, note: str | None = None, folder: str | None = None) -
     filename = os.path.basename(path)
     filesize = os.path.getsize(path)
 
-    ensure_collection()
-    if _already_ingested(filename, filesize):
+    client = get_qdrant(mode)
+    ensure_collection(client)
+    if _already_ingested(filename, filesize, client):
         return {"status": "skipped", "reason": "already ingested", "path": path}
 
     chunks = parse_file(path)
@@ -261,7 +269,7 @@ def ingest_path(path: str, note: str | None = None, folder: str | None = None) -
             )
         )
 
-    get_qdrant().upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
+    client.upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
     return {"status": "ingested", "path": path, "chunks": len(points), "note": note, "folder": folder}
 
 
@@ -408,17 +416,21 @@ def _registry_scroll(must):
     return out
 
 
-def check_duplicate(file_hash: str, filename: str) -> tuple[str, dict | None]:
+def check_duplicate(file_hash: str, filename: str, mode: str | None = None) -> tuple[str, dict | None]:
     """Check registry + files collection for a matching file_hash / filename.
+
+    ``mode`` selects which Qdrant instance to check against ("local"/"hetzner");
+    when omitted the active mode is used. The dedup check must run against the
+    same instance the file will be stored into.
 
     Returns one of:
       ("exact", payload)        same content already known
       ("name_conflict", None)   same filename, different content
       ("new", None)             not seen before
     """
-    ensure_registry_collection()
-    ensure_collection()
-    client = get_qdrant()
+    client = get_qdrant(mode)
+    ensure_registry_collection(client)
+    ensure_collection(client)
 
     for coll in (settings.QDRANT_REGISTRY_COLLECTION, settings.QDRANT_COLLECTION):
         pts, _ = client.scroll(
@@ -692,11 +704,21 @@ def ingest_endpoint(req: IngestRequest):
 async def upload_endpoint(
     file: UploadFile = File(...),
     note: str = Form(""),
+    destination: str = Form(""),
 ):
     """Accept a multipart upload (file + note), save it to watch/documents/,
-    and ingest it with the note stored/searchable alongside the file."""
+    and ingest it with the note stored/searchable alongside the file.
+
+    ``destination`` ("local"/"hetzner") selects which Qdrant instance the file is
+    indexed into; when blank/unknown the active mode is used (unchanged behaviour).
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="no filename provided")
+
+    # Resolve the destination Qdrant. Blank or unrecognised -> active mode.
+    dest_mode = destination.strip().lower() or None
+    if dest_mode is not None and dest_mode not in settings.QDRANT_BY_MODE:
+        dest_mode = None
 
     import hashlib
 
@@ -705,8 +727,9 @@ async def upload_endpoint(
     contents = await file.read()
     fhash = hashlib.md5(contents).hexdigest()
 
-    # Duplicate check against registry + files collection BEFORE ingest.
-    dup_kind, existing = await run_in_threadpool(check_duplicate, fhash, filename)
+    # Duplicate check against registry + files collection BEFORE ingest, on the
+    # destination instance.
+    dup_kind, existing = await run_in_threadpool(check_duplicate, fhash, filename, dest_mode)
     if dup_kind == "exact":
         existing = existing or {}
         return {
@@ -737,7 +760,7 @@ async def upload_endpoint(
     try:
         with open(dest, "wb") as f:
             f.write(contents)
-        result = await run_in_threadpool(ingest_path, dest, note_clean, folder)
+        result = await run_in_threadpool(ingest_path, dest, note_clean, folder, dest_mode)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
