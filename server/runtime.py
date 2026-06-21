@@ -55,7 +55,19 @@ def get_backend() -> str:
 
 
 def get_model() -> str:
-    return _get(_MODEL_KEY) or settings.OLLAMA_MODEL
+    val = _get(_MODEL_KEY)
+    if val:
+        return val
+    # No explicit override -> use the active profile's model.
+    from server import modes
+
+    return settings.profile(modes.get_mode())["model"]
+
+
+def set_model(model: str) -> None:
+    """Persist the active Ollama model (called when a profile is switched)."""
+    if model:
+        _set(_MODEL_KEY, model)
 
 
 def get_fallback() -> bool:
@@ -64,10 +76,13 @@ def get_fallback() -> bool:
 
 
 def snapshot() -> dict:
+    from server import modes
+
     return {
         "backend": get_backend(),
         "model": get_model(),
         "fallback": get_fallback(),
+        "profile": modes.get_mode(),
     }
 
 

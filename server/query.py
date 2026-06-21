@@ -130,7 +130,7 @@ def _build_filter(filters: dict, folder_topics: set[str] | None = None) -> qmode
 def _search(question: str, filters: dict, folder_topics: set[str] | None = None):
     vector = embed.get_embedding(question, is_query=True)
     return get_qdrant().search(
-        collection_name=settings.QDRANT_COLLECTION,
+        collection_name=ingest.files_collection(),
         query_vector=vector,
         query_filter=_build_filter(filters, folder_topics),
         limit=TOP_K,
@@ -192,11 +192,12 @@ def query_endpoint(req: QueryRequest):
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
 
-    # Active operational mode (local/brix) is recorded with every message.
+    # Active profile (assistant/friend) is recorded with every message.
     active_mode = modes.get_mode()
     # Snapshot prior history BEFORE logging the current question, so generation
     # sees "conversation so far" without the current turn duplicated in it.
-    history = memory.get_messages(limit=HISTORY_LIMIT)
+    # History is per profile — only this profile's messages are loaded.
+    history = memory.get_messages(limit=HISTORY_LIMIT, mode=active_mode)
     memory.add_message("user", req.message, active_mode)
 
     # Pass 1 — ask the LLM which route it needs. With tools off and the routing
@@ -329,7 +330,7 @@ def files_endpoint():
 
     while True:
         points, next_offset = client.scroll(
-            collection_name=settings.QDRANT_COLLECTION,
+            collection_name=ingest.files_collection(),
             with_payload=True,
             with_vectors=False,
             limit=256,
@@ -393,7 +394,7 @@ def tag_file_endpoint(filename: str, req: TagRequest):
         )
     client = get_qdrant()
     client.set_payload(
-        collection_name=settings.QDRANT_COLLECTION,
+        collection_name=ingest.files_collection(),
         payload={"tag": tag},
         points=qmodels.Filter(
             must=[qmodels.FieldCondition(key="filename", match=qmodels.MatchValue(value=filename))]

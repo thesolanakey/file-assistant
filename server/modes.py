@@ -1,14 +1,15 @@
-"""Operational mode: "local" vs "brix".
+"""Active profile: "assistant" vs "friend".
 
-A single named runtime mode for the assistant, independent of the generation
-backend and of the query intent (find/summarize). The active mode is persisted
-in the ``app_state`` table under the ``mode`` key, so a ``POST /mode`` survives
-restarts. On first run (nothing stored yet) it falls back to
-``settings.DEFAULT_MODE``.
+The profile is the user-facing toggle. Switching profiles changes the Ollama
+model, the Qdrant collection, the personality (system prompt), and which slice
+of conversation history is loaded — all defined in :data:`settings.PROFILES`.
+The active profile is persisted in the ``app_state`` table under the ``mode``
+key, so a ``POST /mode`` survives restarts. On first run (nothing stored yet, or
+a stale value from an earlier scheme) it falls back to ``settings.DEFAULT_MODE``.
 
 Endpoints:
-  * ``GET  /mode``  -> {"mode": "local"|"brix"}
-  * ``POST /mode``  {"mode": "local"|"brix"} -> {"mode": ..., "previous": ...}
+  * ``GET  /mode``  -> {"mode": "assistant"|"friend"}
+  * ``POST /mode``  {"mode": "assistant"|"friend"} -> {"mode": ..., "previous": ...}
 """
 from __future__ import annotations
 
@@ -26,18 +27,28 @@ _MODE_KEY = "mode"
 
 
 def get_mode() -> str:
-    """Return the persisted active mode, or the configured default if unset."""
+    """Return the persisted active profile, or the default if unset/stale."""
     with db.connection() as conn:
         row = conn.execute(
             "SELECT value FROM app_state WHERE key = ?", (_MODE_KEY,)
         ).fetchone()
-    if row is None:
+    if row is None or row["value"] not in settings.ALLOWED_MODES:
+        # Unset, or left over from the old local/brix scheme -> default profile.
         return settings.DEFAULT_MODE
     return row["value"]
 
 
+def get_collection() -> str:
+    """The active profile's Qdrant collection."""
+    return settings.collection_for(get_mode())
+
+
 def set_mode(mode: str) -> str:
-    """Validate and persist the active mode; return the normalized value."""
+    """Validate and persist the active profile; return the normalized value.
+
+    Switching a profile also points generation at that profile's model (so the
+    correct Ollama model is loaded for the new personality).
+    """
     normalized = mode.strip().lower()
     if normalized not in settings.ALLOWED_MODES:
         raise ValueError(
@@ -53,6 +64,14 @@ def set_mode(mode: str) -> str:
             """,
             (_MODE_KEY, normalized, now),
         )
+
+    # Point generation at the new profile's model and best-effort warm it in
+    # Ollama so the first message isn't slow. Both are non-fatal.
+    from server import runtime, generate
+
+    model = settings.profile(normalized)["model"]
+    runtime.set_model(model)
+    generate.warm_model(model)
     return normalized
 
 

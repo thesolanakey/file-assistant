@@ -76,11 +76,11 @@ def _ram_percent() -> float | None:
 
 
 def _qdrant_stats() -> tuple[str, int | None]:
-    """(status, doc_count) for the active mode's Qdrant — best-effort/fast."""
+    """(status, doc_count) for the active profile's collection — best-effort."""
     try:
         client = ingest.get_qdrant()
         count = client.count(
-            collection_name=settings.QDRANT_COLLECTION, exact=False
+            collection_name=ingest.files_collection(), exact=False
         ).count
         return "ok", int(count)
     except Exception:  # noqa: BLE001
@@ -100,6 +100,7 @@ def health():
         "status": "ok",
         "backend": cfg["backend"],
         "mode": modes.get_mode(),
+        "profile": modes.get_mode(),
         "model": cfg["model"],
         "fallback": cfg["fallback"],
         "qdrant": qdrant_status,

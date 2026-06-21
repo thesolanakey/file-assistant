@@ -310,8 +310,8 @@
     <div class="sb-full">
       <div class="backend-toggle">
         <div class="pill" id="pill">
-          <button class="pill-btn" data-val="local">local</button>
-          <button class="pill-btn" data-val="brix">brix</button>
+          <button class="pill-btn" data-val="assistant">assistant</button>
+          <button class="pill-btn" data-val="friend">friend</button>
         </div>
       </div>
 
@@ -360,7 +360,7 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const ds = document.body.dataset;
-  const state = { backend: ds.backend || "local", mode: ds.mode || "local", attached: null, busy: false };
+  const state = { backend: ds.backend || "ollama", mode: ds.mode || "assistant", attached: null, busy: false };
 
   const sidebar   = $("sidebar");
   const chat      = $("chat");
@@ -464,8 +464,8 @@
     scrollBottom();
   }
 
-  // ── backend toggle (posts /mode per spec) ──
-  function setBackendActive(val) {
+  // ── profile toggle (assistant / friend; posts /mode) ──
+  function setProfileActive(val) {
     document.querySelectorAll(".pill-btn").forEach((b) => b.classList.toggle("active", b.dataset.val === val));
   }
   document.querySelectorAll(".pill-btn").forEach((btn) => {
@@ -473,9 +473,11 @@
       const val = btn.dataset.val;
       try {
         await api("POST", "/mode", { mode: val });
-        state.backend = val;
-        setBackendActive(val);
-      } catch (e) { console.warn("mode change failed:", e.message); }
+        state.mode = val;
+        setProfileActive(val);
+        // History is per profile — reload this profile's conversation.
+        await loadHistory();
+      } catch (e) { console.warn("profile change failed:", e.message); }
     });
   });
 
@@ -581,10 +583,10 @@
 
   // ── init ──
   document.addEventListener("DOMContentLoaded", () => {
-    setBackendActive(ds.backend === "brix" ? "brix" : "local"); // 1. reflect backend
-    state.mode = ds.mode || "local";                            // 2. mode available in state
-    loadHistory();                                              // 3. populate sidebar + chat
-    input.focus();                                             // 4. focus textarea
+    state.mode = ds.mode === "friend" ? "friend" : "assistant";  // 1. active profile
+    setProfileActive(state.mode);                                // 2. reflect profile in toggle
+    loadHistory();                                               // 3. populate sidebar + chat
+    input.focus();                                               // 4. focus textarea
   });
 })();
 {% endraw %}</script>

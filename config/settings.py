@@ -39,24 +39,17 @@ if GENERATION_BACKEND not in _ALLOWED_BACKENDS:
         f"got {GENERATION_BACKEND!r}"
     )
 
-# --- Qdrant (dual: local + brix) -----------------------------------------
-# Two Qdrant instances, selected by the active operational mode (see
-# server/modes.py): local mode talks to the local Qdrant, brix mode to the
-# remote one. The legacy QDRANT_HOST/QDRANT_PORT are kept as the default for the
-# local instance for backward compatibility.
+# --- Qdrant -----------------------------------------------------------------
+# A single (local) Qdrant instance. Profiles select the collection, not the
+# host (see server/ingest.get_qdrant + server/modes). The legacy
+# QDRANT_HOST/QDRANT_PORT are kept as the default for the local instance.
 QDRANT_HOST: str = _get("QDRANT_HOST", "qdrant")
 QDRANT_PORT: int = int(_get("QDRANT_PORT", "6333"))
 
 QDRANT_HOST_LOCAL: str = os.getenv("QDRANT_HOST_LOCAL", QDRANT_HOST)
 QDRANT_PORT_LOCAL: int = int(os.getenv("QDRANT_PORT_LOCAL", str(QDRANT_PORT)))
-QDRANT_HOST_BRIX: str = os.getenv("QDRANT_HOST_BRIX", "46.62.202.18")
-QDRANT_PORT_BRIX: int = int(os.getenv("QDRANT_PORT_BRIX", "6333"))
 
-# mode -> (host, port). Used by server.ingest.get_qdrant() to pick a client.
-QDRANT_BY_MODE: dict[str, tuple[str, int]] = {
-    "local": (QDRANT_HOST_LOCAL, QDRANT_PORT_LOCAL),
-    "brix": (QDRANT_HOST_BRIX, QDRANT_PORT_BRIX),
-}
+# brix Qdrant host will be configured here when Brix is set up.
 
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "files")
 # Registry of registered folders/files for lazy (on-demand) indexing.
@@ -70,17 +63,61 @@ REGISTERED_DIR: str = os.getenv("REGISTERED_DIR", "/app/registered")
 EMBED_MODEL: str = _get("EMBED_MODEL", "nomic-ai/nomic-embed-text-v1")
 EMBED_DIM: int = int(os.getenv("EMBED_DIM", "768"))
 
-# --- Operational mode -------------------------------------------------------
-# Named runtime modes for the assistant. These are independent of the
-# generation backend and of the query intent (find/summarize). The active mode
-# is persisted to SQLite (see server/modes.py) so it survives restarts; this
-# value is only the fallback used the very first time, before anything is saved.
-ALLOWED_MODES = {"local", "brix"}
-DEFAULT_MODE: str = _get("DEFAULT_MODE", "local").strip().lower()
+# --- Profiles (the assistant/friend switcher) -------------------------------
+# A profile bundles everything that changes when the user flips the toggle: the
+# Ollama model, the Qdrant collection (separate vector store per profile), and
+# the personality (system prompt). Conversation history is also kept separate
+# per profile (messages are tagged with the active profile — see server/memory).
+# The active profile is persisted to SQLite (server/modes.py) so a switch
+# survives restarts. All profiles share the same (local) Qdrant host; only the
+# collection differs.
+_ASSISTANT_PROMPT = (
+    "You are the user's personal assistant. Your tone is warm, casual, and "
+    "to the point — like a friend who knows them well. You have access to "
+    "their files and to your past conversations with them; reference earlier "
+    "messages naturally when they're relevant. Answer from the provided "
+    "context and conversation history, and if something isn't there, just "
+    "say so plainly."
+)
+_FRIEND_PROMPT = (
+    "You are a casual friendly companion. Talk naturally, no formalities, no "
+    "assistant-speak. Remember what we talk about."
+)
+
+PROFILES: dict[str, dict] = {
+    "assistant": {
+        "model": "llama3.2",
+        "qdrant_collection": "assistant",
+        "system_prompt": _ASSISTANT_PROMPT,
+    },
+    "friend": {
+        # Uncensored local model; if it isn't pulled in Ollama, generation falls
+        # back to Claude automatically (see server/generate.py).
+        "model": "dolphin-mistral",
+        "qdrant_collection": "friend",
+        "system_prompt": _FRIEND_PROMPT,
+    },
+}
+
+ALLOWED_MODES = set(PROFILES)
+DEFAULT_MODE: str = _get("DEFAULT_MODE", "assistant").strip().lower()
 if DEFAULT_MODE not in ALLOWED_MODES:
-    raise ValueError(
-        f"DEFAULT_MODE must be one of {sorted(ALLOWED_MODES)}, got {DEFAULT_MODE!r}"
-    )
+    DEFAULT_MODE = "assistant"
+
+
+def profile(name: str | None) -> dict:
+    """Return a profile definition, falling back to the default profile."""
+    return PROFILES.get(name or DEFAULT_MODE, PROFILES[DEFAULT_MODE])
+
+
+def collection_for(name: str | None) -> str:
+    """The Qdrant `files` collection for a given profile."""
+    return profile(name)["qdrant_collection"]
+
+
+def all_collections() -> list[str]:
+    """Every profile's files collection (for startup provisioning)."""
+    return [p["qdrant_collection"] for p in PROFILES.values()]
 
 # --- Persistence (SQLite: conversation memory + persisted mode) -------------
 DATA_DIR: str = os.getenv("DATA_DIR", "/app/data")

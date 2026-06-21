@@ -35,28 +35,8 @@ _last_tps: float | None = None
 def last_tps() -> float | None:
     return _last_tps
 
-# Per-mode personalities. Keyed by the operational mode (see server/modes.py).
-MODE_SYSTEM_PROMPTS = {
-    "local": (
-        "You are the user's personal assistant. Your tone is warm, casual, and "
-        "to the point — like a friend who knows them well. You have access to "
-        "their files and to your past conversations with them; reference earlier "
-        "messages naturally when they're relevant. Answer from the provided "
-        "context and conversation history, and if something isn't there, just "
-        "say so plainly."
-    ),
-    "brix": (
-        "You are a technical research assistant. Your tone is precise, rigorous, "
-        "and grounded in the source literature. Base every claim on the retrieved "
-        "documents and cite source filenames in brackets, e.g. [paper.pdf], when "
-        "you use them. Clearly distinguish what the sources state from your own "
-        "inference. If the retrieved context does not support an answer, say so "
-        "explicitly rather than speculating."
-    ),
-}
-
-# Fallback personality if an unknown mode is ever passed.
-_DEFAULT_MODE = "local"
+# Per-profile personalities live in settings.PROFILES; system_prompt_for reads
+# them so the assistant/friend toggle changes the personality.
 
 # Appended to the system message for the Ollama (tool-capable) path only — tells
 # the model the tools exist and the policy for using them. Claude does not get
@@ -74,7 +54,7 @@ _TOOLS_GUIDANCE = (
 
 
 def system_prompt_for(mode: str | None) -> str:
-    base = MODE_SYSTEM_PROMPTS.get(mode or _DEFAULT_MODE, MODE_SYSTEM_PROMPTS[_DEFAULT_MODE])
+    base = settings.profile(mode)["system_prompt"]
     now = f"Current date and time: {datetime.now(timezone(timedelta(hours=2))).strftime('%A %d %B %Y, %H:%M')} (Europe/Amsterdam)"
     return f"{base}\n\n{now}"
 
@@ -279,6 +259,32 @@ def _record_tps(data: dict) -> None:
     dur_ns = data.get("eval_duration")
     if count and dur_ns:
         _last_tps = round(count / (dur_ns / 1e9), 1)
+
+
+def warm_model(model: str) -> None:
+    """Best-effort, non-blocking: ask Ollama to load ``model`` into memory.
+
+    Fired when a profile is switched so the first message isn't slow. Fully
+    non-fatal — if Ollama is unreachable or the model isn't pulled, generation
+    falls back to Claude at request time anyway.
+    """
+    import threading
+
+    def _load() -> None:
+        url = settings.OLLAMA_HOST.rstrip("/") + "/api/generate"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"model": model}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=settings.OLLAMA_TIMEOUT):
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=_load, daemon=True).start()
 
 
 # --- Dispatch ---------------------------------------------------------------

@@ -17,7 +17,7 @@ import logging
 import re
 
 from config import settings
-from server import generate, memory
+from server import generate, memory, modes
 
 log = logging.getLogger("dataset")
 
@@ -191,7 +191,7 @@ def build_dataset_from_history() -> dict:
     Returns ``{"extracted": N, "ingested": N, "items": [titles...]}``. Returns
     early (with a note) if there are fewer than 3 messages to extract from.
     """
-    history = memory.get_messages()
+    history = memory.get_messages(mode=modes.get_mode())
     if len(history) < 3:
         return {
             "extracted": 0,

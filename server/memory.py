@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
 
-from server import db
+from server import db, modes
 
 router = APIRouter()
 
@@ -62,16 +62,21 @@ def get_messages(limit: int | None = None, mode: str | None = None) -> list[dict
     return [dict(row) for row in rows]
 
 
-def count_messages() -> int:
+def count_messages(mode: str | None = None) -> int:
+    """Count stored messages, optionally scoped to one profile."""
+    where = "WHERE mode = ?" if mode is not None else ""
+    params: tuple = (mode,) if mode is not None else ()
     with db.connection() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        return int(conn.execute(f"SELECT COUNT(*) FROM messages {where}", params).fetchone()[0])
 
 
-def clear_messages() -> int:
-    """Delete all stored messages. Returns the number removed."""
+def clear_messages(mode: str | None = None) -> int:
+    """Delete stored messages (all, or only one profile's). Returns count removed."""
+    where = "WHERE mode = ?" if mode is not None else ""
+    params: tuple = (mode,) if mode is not None else ()
     with db.connection() as conn:
-        n = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-        conn.execute("DELETE FROM messages")
+        n = int(conn.execute(f"SELECT COUNT(*) FROM messages {where}", params).fetchone()[0])
+        conn.execute(f"DELETE FROM messages {where}", params)
     return n
 
 
@@ -89,18 +94,22 @@ def messages_endpoint(
 
 @router.get("/history")
 def history_endpoint(limit: int = Query(default=100, ge=1, le=1000)):
-    """Conversation history for the chat UI (oldest first, most recent N)."""
+    """Conversation history for the chat UI (oldest first, most recent N).
+
+    Scoped to the active profile — each profile has its own conversation.
+    """
+    mode = modes.get_mode()
     return {
-        "count": count_messages(),
-        "messages": get_messages(limit=limit),
+        "count": count_messages(mode),
+        "messages": get_messages(limit=limit, mode=mode),
     }
 
 
 @router.delete("/history")
 def clear_history_endpoint():
-    """Clear all stored conversation history. Returns {"status": "ok"}.
+    """Clear the active profile's conversation history. Returns {"status": "ok"}.
 
-    Called by the UI's "new chat" button.
+    Called by the UI's "new chat" button — only the current profile is cleared.
     """
-    clear_messages()
+    clear_messages(modes.get_mode())
     return {"status": "ok"}

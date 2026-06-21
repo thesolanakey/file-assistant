@@ -42,31 +42,25 @@ _SKIP_NAMES = {".gitkeep"}
 
 
 def get_qdrant(mode: str | None = None) -> QdrantClient:
-    """Return the QdrantClient for ``mode`` (the active mode if not given).
+    """Return the shared QdrantClient (the local Qdrant instance).
 
-    local mode -> local Qdrant, brix mode -> remote Qdrant. Each client is
-    created once and cached; queries and ingestion both route to the client for
-    whichever mode is currently active.
+    All profiles use the same Qdrant host; the profile only selects which
+    *collection* is read/written (see :func:`files_collection`). The ``mode``
+    argument is accepted for backward compatibility but no longer changes the
+    host. The client is created once and cached.
     """
-    if mode is None:
-        # Lazy import avoids a circular import at module load time.
-        from server import modes
-
-        mode = modes.get_mode()
-    if mode not in settings.QDRANT_BY_MODE:
-        mode = settings.DEFAULT_MODE
-
-    client = _qdrant_clients.get(mode)
+    client = _qdrant_clients.get("_")
     if client is None:
         with _qdrant_lock:
-            client = _qdrant_clients.get(mode)
+            client = _qdrant_clients.get("_")
             if client is None:
-                host, port = settings.QDRANT_BY_MODE[mode]
-                client = QdrantClient(host=host, port=port)
-                _qdrant_clients[mode] = client
-                # Best-effort: provision collections on a freshly-used Qdrant so
-                # switching modes works against an empty instance. If the target
-                # is unreachable, let the later query surface the error clearly.
+                client = QdrantClient(
+                    host=settings.QDRANT_HOST_LOCAL, port=settings.QDRANT_PORT_LOCAL
+                )
+                _qdrant_clients["_"] = client
+                # Best-effort: provision every profile's collection so switching
+                # works immediately. If Qdrant is unreachable, let the later
+                # query surface the error clearly.
                 try:
                     ensure_collection(client)
                     ensure_registry_collection(client)
@@ -75,18 +69,28 @@ def get_qdrant(mode: str | None = None) -> QdrantClient:
     return client
 
 
+def files_collection(mode: str | None = None) -> str:
+    """The files collection for ``mode`` (the active profile if not given)."""
+    if mode is None or mode not in settings.ALLOWED_MODES:
+        from server import modes  # lazy import avoids a circular import
+
+        mode = modes.get_mode()
+    return settings.collection_for(mode)
+
+
 def ensure_collection(client: QdrantClient | None = None) -> None:
-    """Create the `files` collection (768-dim, cosine) if it does not exist."""
+    """Create each profile's `files` collection (768-dim, cosine) if missing."""
     client = client or get_qdrant()
     existing = {c.name for c in client.get_collections().collections}
-    if settings.QDRANT_COLLECTION not in existing:
-        client.create_collection(
-            collection_name=settings.QDRANT_COLLECTION,
-            vectors_config=qmodels.VectorParams(
-                size=settings.EMBED_DIM,
-                distance=qmodels.Distance.COSINE,
-            ),
-        )
+    for coll in settings.all_collections():
+        if coll not in existing:
+            client.create_collection(
+                collection_name=coll,
+                vectors_config=qmodels.VectorParams(
+                    size=settings.EMBED_DIM,
+                    distance=qmodels.Distance.COSINE,
+                ),
+            )
 
 
 def _should_skip(path: str) -> bool:
@@ -179,11 +183,16 @@ def file_md5(path: str) -> str:
     return h.hexdigest()
 
 
-def _already_ingested(filename: str, filesize: int, client: QdrantClient | None = None) -> bool:
+def _already_ingested(
+    filename: str,
+    filesize: int,
+    client: QdrantClient | None = None,
+    collection: str | None = None,
+) -> bool:
     """Dedup check: is a point with this filename+size already stored?"""
     client = client or get_qdrant()
     result = client.scroll(
-        collection_name=settings.QDRANT_COLLECTION,
+        collection_name=collection or files_collection(),
         scroll_filter=qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
@@ -212,8 +221,8 @@ def ingest_path(
     query about the file's description retrieves it) and stored on every point's
     payload as ``note``. ``folder`` is stored on the payload; if omitted it is
     derived from the file's location under WATCH_DIR. ``mode`` selects which
-    Qdrant instance to store into ("local"/"brix"); when omitted the active
-    mode is used.
+    profile's collection to store into ("assistant"/"friend"); when omitted the
+    active profile is used.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -225,7 +234,8 @@ def ingest_path(
 
     client = get_qdrant(mode)
     ensure_collection(client)
-    if _already_ingested(filename, filesize, client):
+    collection = files_collection(mode)
+    if _already_ingested(filename, filesize, client, collection):
         return {"status": "skipped", "reason": "already ingested", "path": path}
 
     chunks = parse_file(path)
@@ -269,7 +279,7 @@ def ingest_path(
             )
         )
 
-    client.upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
+    client.upsert(collection_name=collection, points=points)
     return {"status": "ingested", "path": path, "chunks": len(points), "note": note, "folder": folder}
 
 
@@ -419,9 +429,9 @@ def _registry_scroll(must):
 def check_duplicate(file_hash: str, filename: str, mode: str | None = None) -> tuple[str, dict | None]:
     """Check registry + files collection for a matching file_hash / filename.
 
-    ``mode`` selects which Qdrant instance to check against ("local"/"brix");
-    when omitted the active mode is used. The dedup check must run against the
-    same instance the file will be stored into.
+    ``mode`` selects which profile's collection to check against
+    ("assistant"/"friend"); when omitted the active profile is used. The dedup
+    check must run against the same collection the file will be stored into.
 
     Returns one of:
       ("exact", payload)        same content already known
@@ -431,8 +441,9 @@ def check_duplicate(file_hash: str, filename: str, mode: str | None = None) -> t
     client = get_qdrant(mode)
     ensure_registry_collection(client)
     ensure_collection(client)
+    coll_files = files_collection(mode)
 
-    for coll in (settings.QDRANT_REGISTRY_COLLECTION, settings.QDRANT_COLLECTION):
+    for coll in (settings.QDRANT_REGISTRY_COLLECTION, coll_files):
         pts, _ = client.scroll(
             collection_name=coll,
             scroll_filter=qmodels.Filter(must=[
@@ -444,7 +455,7 @@ def check_duplicate(file_hash: str, filename: str, mode: str | None = None) -> t
             return "exact", (pts[0].payload or {})
 
     # same filename, different hash?
-    for coll in (settings.QDRANT_REGISTRY_COLLECTION, settings.QDRANT_COLLECTION):
+    for coll in (settings.QDRANT_REGISTRY_COLLECTION, coll_files):
         pts, _ = client.scroll(
             collection_name=coll,
             scroll_filter=qmodels.Filter(must=[
@@ -709,15 +720,15 @@ async def upload_endpoint(
     """Accept a multipart upload (file + note), save it to watch/documents/,
     and ingest it with the note stored/searchable alongside the file.
 
-    ``destination`` ("local"/"brix") selects which Qdrant instance the file is
-    indexed into; when blank/unknown the active mode is used (unchanged behaviour).
+    ``destination`` ("assistant"/"friend") selects which profile's collection the
+    file is indexed into; when blank/unknown the active profile is used.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="no filename provided")
 
-    # Resolve the destination Qdrant. Blank or unrecognised -> active mode.
+    # Resolve the destination profile. Blank or unrecognised -> active profile.
     dest_mode = destination.strip().lower() or None
-    if dest_mode is not None and dest_mode not in settings.QDRANT_BY_MODE:
+    if dest_mode is not None and dest_mode not in settings.ALLOWED_MODES:
         dest_mode = None
 
     import hashlib
