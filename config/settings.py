@@ -93,7 +93,7 @@ PROFILES: dict[str, dict] = {
     "friend": {
         # Uncensored local model; if it isn't pulled in Ollama, generation falls
         # back to Claude automatically (see server/generate.py).
-        "model": "dolphin-mistral",
+        "model": "dolphin-phi:latest",
         "qdrant_collection": "friend",
         "system_prompt": _FRIEND_PROMPT,
     },

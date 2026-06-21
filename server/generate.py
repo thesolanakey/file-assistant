@@ -153,14 +153,15 @@ def _parse_text_tool_call(content: str) -> dict | None:
     return None
 
 
-def _ollama_chat(messages: list[dict], tools: list[dict] | None) -> dict:
+def _ollama_chat(messages: list[dict], tools: list[dict] | None, model: str) -> dict:
     """POST one round to Ollama's /api/chat and return the parsed response.
 
-    Raises :class:`OllamaUnavailable` on any connection/transport problem so the
-    dispatcher can fall back to Claude.
+    ``model`` is the Ollama model to run (the active profile's model — see
+    :func:`ollama_generate`). Raises :class:`OllamaUnavailable` on any
+    connection/transport problem so the dispatcher can fall back to Claude.
     """
     url = settings.OLLAMA_HOST.rstrip("/") + "/api/chat"
-    body: dict = {"model": runtime.get_model(), "messages": messages, "stream": False}
+    body: dict = {"model": model, "messages": messages, "stream": False}
     if tools:
         body["tools"] = tools
     req = urllib.request.Request(
@@ -201,6 +202,9 @@ def ollama_generate(
     """
     from server import tools  # lazy import to avoid an import cycle
 
+    # Use the active profile's model (settings.profile), not the OLLAMA_MODEL env
+    # var — the env var is only the initial default in settings.py.
+    model = settings.profile(mode)["model"]
     system = system_prompt_for(mode)
     if tools_enabled:
         system += _TOOLS_GUIDANCE
@@ -213,7 +217,7 @@ def ollama_generate(
     ]
 
     for _ in range(_MAX_TOOL_ROUNDS):
-        data = _ollama_chat(messages, schemas)
+        data = _ollama_chat(messages, schemas, model)
         msg = data.get("message", {}) or {}
         tool_calls = msg.get("tool_calls") or []
 
@@ -247,7 +251,7 @@ def ollama_generate(
             messages.append({"role": "tool", "tool_name": name, "content": result})
 
     # Tool budget exhausted — ask once more with tools disabled to force a reply.
-    data = _ollama_chat(messages, None)
+    data = _ollama_chat(messages, None, model)
     _record_tps(data)
     return (data.get("message", {}) or {}).get("content", "") or ""
 
