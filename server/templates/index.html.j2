@@ -508,6 +508,17 @@
     showTyping();
 
     try {
+      // slash command: /dataset builds a knowledge dataset from this conversation
+      if (text === "/dataset" || text.startsWith("/dataset ")) {
+        const dd = await api("POST", "/dataset/build");
+        removeTyping();
+        let msg = dd.note
+          ? "// " + dd.note
+          : "// extracted " + dd.extracted + " items and ingested " + dd.ingested + " into knowledge base";
+        if (dd.items && dd.items.length) msg += "\n" + dd.items.map((t) => "› " + t).join("\n");
+        addMessage("ai", msg);
+        return;
+      }
       let filename = null;
       if (file) {
         const fd = new FormData();

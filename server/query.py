@@ -32,14 +32,26 @@ HISTORY_LIMIT = 20
 # registry files that might be more relevant and embed them on demand.
 _CONFIDENCE_THRESHOLD = 0.45
 
-# Appended to the system prompt on the first (decision) pass. The model emits the
-# search JSON only when it actually needs the indexed documents; otherwise it
-# replies normally and we skip Qdrant entirely.
+# Appended to the system prompt on the first (decision) pass. The model picks one
+# of three routes: search the indexed documents, search the live web, or just
+# answer. We only run Qdrant / the web tool when it asks for them.
 _SEARCH_INSTRUCTION = (
-    "\n\nIf answering this question requires searching stored documents, notes, "
-    "or uploaded files, respond with only this JSON and nothing else: "
-    '{"action": "search", "query": "<your search terms>"}. '
-    "Otherwise respond normally."
+    "\n\nIf answering requires searching your stored documents, notes, or "
+    'uploaded files, respond with only: {"action": "search", "query": "<search terms>"}\n'
+    "If answering requires current/live information from the web (news, weather, "
+    "prices, today's date, sports scores, recent events), respond with only: "
+    '{"action": "web_search", "query": "<search terms>"}\n'
+    "Otherwise respond normally.\n"
+    "Examples:\n"
+    "- 'hello' → respond normally\n"
+    "- 'what is the capital of France?' → respond normally\n"
+    "- 'what are today's football scores?' → "
+    '{"action": "web_search", "query": "football scores today"}\n'
+    "- 'find my notes on project zephyr' → "
+    '{"action": "search", "query": "project zephyr"}\n'
+    "- 'what did i upload about cold-start latency?' → "
+    '{"action": "search", "query": "cold-start latency"}\n'
+    "- 'what day is it?' → respond normally (use the current date/time provided)"
 )
 
 
@@ -49,10 +61,11 @@ class QueryRequest(BaseModel):
     folder_ids: list[str] = Field(default_factory=list)
 
 
-def _parse_search_action(text: str) -> str | None:
-    """If ``text`` is the search-action JSON, return its query string (possibly
+def _parse_action(text: str) -> dict | None:
+    """If ``text`` is an action JSON, return ``{"action", "query"}`` (query may be
     empty); otherwise return None, meaning the model answered normally.
 
+    Recognized actions are "search" (Qdrant) and "web_search" (live web).
     Tolerant of a surrounding ```json fence or extra prose around the object.
     """
     s = (text or "").strip()
@@ -68,10 +81,34 @@ def _parse_search_action(text: str) -> str | None:
                 obj = json.loads(m.group(0))
             except (json.JSONDecodeError, ValueError):
                 obj = None
-    if isinstance(obj, dict) and obj.get("action") == "search":
+    if isinstance(obj, dict) and obj.get("action") in ("search", "web_search"):
         query = obj.get("query")
-        return query.strip() if isinstance(query, str) else ""
+        return {
+            "action": obj["action"],
+            "query": query.strip() if isinstance(query, str) else "",
+        }
     return None
+
+
+# Signal phrases that strongly imply the user is asking about their own stored
+# content. Easy to extend — just add to the tuple.
+_DOC_SIGNALS = (
+    "my files", "my notes", "my documents", "in my", "from my", "uploaded",
+    "ingested", "stored", "you have", "i saved", "i uploaded", "find in",
+    "look up", "search for", "what does", "what did i",
+)
+
+
+def _looks_like_doc_query(message: str) -> bool:
+    """Heuristic fallback: does the message clearly reference the user's own
+    files/notes/documents? Used to force the doc-search route when the decision
+    pass answered directly despite an obvious document reference.
+
+    Fires only on explicit document-reference language (the _DOC_SIGNALS
+    phrases), not on arbitrary proper nouns.
+    """
+    lowered = message.lower()
+    return any(signal in lowered for signal in _DOC_SIGNALS)
 
 
 def _build_filter(filters: dict, folder_topics: set[str] | None = None) -> qmodels.Filter | None:
@@ -162,9 +199,9 @@ def query_endpoint(req: QueryRequest):
     history = memory.get_messages(limit=HISTORY_LIMIT)
     memory.add_message("user", req.message, active_mode)
 
-    # Pass 1 — ask the LLM whether it needs the stored documents. With tools off
-    # and the search instruction appended, it either answers normally or returns
-    # the {"action": "search", "query": ...} JSON.
+    # Pass 1 — ask the LLM which route it needs. With tools off and the routing
+    # instruction appended, it either answers normally or returns a
+    # {"action": "search"|"web_search", "query": ...} JSON.
     try:
         decision = generate.generate(
             req.message,
@@ -177,10 +214,17 @@ def query_endpoint(req: QueryRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
 
-    search_query = _parse_search_action(decision["answer"])
+    parsed = _parse_action(decision["answer"])
 
-    # No search needed -> the first response IS the answer. No Qdrant involved.
-    if search_query is None:
+    # Heuristic fallback: the decision model (esp. small local models) sometimes
+    # answers directly even when the message clearly references the user's own
+    # files. Force the doc-search route in that case, using the original message
+    # as the search query.
+    if parsed is None and _looks_like_doc_query(req.message):
+        parsed = {"action": "search", "query": req.message}
+
+    # No action -> the first response IS the answer. No retrieval involved.
+    if parsed is None:
         response = {
             "mode": "chat",
             "active_mode": active_mode,
@@ -195,9 +239,42 @@ def query_endpoint(req: QueryRequest):
         memory.add_message("assistant", _assistant_content(response), active_mode)
         return response
 
-    # Search needed -> run retrieval with the model's query (fall back to the
-    # original message if it didn't supply one).
-    query = search_query or req.message
+    # Web route -> run the web search directly (same call the /search endpoint
+    # uses), inject the result as context, and ask for a final answer. Tools are
+    # off on this pass — we already have the web result in hand.
+    if parsed["action"] == "web_search":
+        from server import tools  # lazy import to avoid an import cycle
+
+        web_query = parsed["query"] or req.message
+        results = tools.web_search(web_query)
+        context = f"Web search results for '{web_query}':\n\n{results}"
+        try:
+            result = generate.generate(
+                req.message,
+                context,
+                mode=active_mode,
+                history=history,
+                tools_enabled=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
+        response = {
+            "mode": "web_search",
+            "active_mode": active_mode,
+            "question": req.message,
+            "answer": result["answer"],
+            "sources": [],
+            "chunks": [],
+            "embedded_on_demand": 0,
+            "backend": result["backend"],
+            "tps": result.get("tps"),
+        }
+        memory.add_message("assistant", _assistant_content(response), active_mode)
+        return response
+
+    # Document route (action == "search") -> run retrieval with the model's
+    # query (fall back to the original message if it didn't supply one).
+    query = parsed["query"] or req.message
     folder_ids = req.folder_ids or []
     try:
         chunks, embedded_now = _run_search(query, req.filters, folder_ids)

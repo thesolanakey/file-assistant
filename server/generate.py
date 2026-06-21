@@ -20,6 +20,7 @@ import logging
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 from config import settings
 from server import runtime
@@ -73,7 +74,9 @@ _TOOLS_GUIDANCE = (
 
 
 def system_prompt_for(mode: str | None) -> str:
-    return MODE_SYSTEM_PROMPTS.get(mode or _DEFAULT_MODE, MODE_SYSTEM_PROMPTS[_DEFAULT_MODE])
+    base = MODE_SYSTEM_PROMPTS.get(mode or _DEFAULT_MODE, MODE_SYSTEM_PROMPTS[_DEFAULT_MODE])
+    now = f"Current date and time: {datetime.now(timezone(timedelta(hours=2))).strftime('%A %d %B %Y, %H:%M')} (Europe/Amsterdam)"
+    return f"{base}\n\n{now}"
 
 
 def _format_history(history: list[dict] | None) -> str:

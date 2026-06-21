@@ -16,7 +16,8 @@ from fastapi.templating import Jinja2Templates
 
 from config import settings
 from server import (
-    db, generate, ingest, ingest_url, memory, modes, process, query, runtime,
+    dataset, db, generate, ingest, ingest_url, memory, modes, process, query,
+    runtime,
 )
 
 _BASE_DIR = os.path.dirname(__file__)
@@ -106,6 +107,23 @@ def health():
         "msg_count": memory.count_messages(),
         "ram": _ram_percent(),
         "tps": generate.last_tps(),
+    }
+
+
+@app.post("/dataset/build")
+def dataset_build():
+    """Extract structured knowledge from the current conversation (Claude Haiku)
+    and ingest each item into Qdrant. Returns {extracted, ingested, items}."""
+    return dataset.build_dataset_from_history()
+
+
+@app.get("/dataset/status")
+def dataset_status():
+    """Live counts: messages held in conversation memory + docs in Qdrant."""
+    _status, doc_count = _qdrant_stats()
+    return {
+        "conversations_in_memory": memory.count_messages(),
+        "qdrant_count": doc_count,
     }
 
 
