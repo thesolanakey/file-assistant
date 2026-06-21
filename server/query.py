@@ -1,10 +1,18 @@
-"""Query API: vector search with find/summarize intent detection.
+"""Query API: tool-calling RAG.
+
+Instead of always running a vector search, /query first asks the LLM whether the
+question needs the stored documents. The model either answers normally (plain
+chat, no Qdrant) or replies with {"action": "search", "query": "..."}, in which
+case we run the search, inject the chunks, and ask the LLM for a final answer.
 
 Endpoints:
-  - POST /query   {"message": str, "filters": {}}  -> chunks or summary
+  - POST /query   {"message": str, "filters": {}}  -> answer (chat or RAG)
   - GET  /files                                      -> indexed files + metadata
 """
 from __future__ import annotations
+
+import json
+import re
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -23,7 +31,16 @@ HISTORY_LIMIT = 20
 # If the best already-indexed hit scores below this, we look for pending
 # registry files that might be more relevant and embed them on demand.
 _CONFIDENCE_THRESHOLD = 0.45
-_SUMMARIZE_KEYWORDS = ("summarize", "explain", "overview", "tldr")
+
+# Appended to the system prompt on the first (decision) pass. The model emits the
+# search JSON only when it actually needs the indexed documents; otherwise it
+# replies normally and we skip Qdrant entirely.
+_SEARCH_INSTRUCTION = (
+    "\n\nIf answering this question requires searching stored documents, notes, "
+    "or uploaded files, respond with only this JSON and nothing else: "
+    '{"action": "search", "query": "<your search terms>"}. '
+    "Otherwise respond normally."
+)
 
 
 class QueryRequest(BaseModel):
@@ -32,11 +49,29 @@ class QueryRequest(BaseModel):
     folder_ids: list[str] = Field(default_factory=list)
 
 
-def _detect_mode(question: str) -> str:
-    lowered = question.lower()
-    if any(keyword in lowered for keyword in _SUMMARIZE_KEYWORDS):
-        return "summarize"
-    return "find"
+def _parse_search_action(text: str) -> str | None:
+    """If ``text`` is the search-action JSON, return its query string (possibly
+    empty); otherwise return None, meaning the model answered normally.
+
+    Tolerant of a surrounding ```json fence or extra prose around the object.
+    """
+    s = (text or "").strip()
+    if not s:
+        return None
+    obj = None
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        m = re.search(r"\{.*\}", s, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+            except (json.JSONDecodeError, ValueError):
+                obj = None
+    if isinstance(obj, dict) and obj.get("action") == "search":
+        query = obj.get("query")
+        return query.strip() if isinstance(query, str) else ""
+    return None
 
 
 def _build_filter(filters: dict, folder_topics: set[str] | None = None) -> qmodels.Filter | None:
@@ -69,49 +104,35 @@ def _search(question: str, filters: dict, folder_topics: set[str] | None = None)
 def _assistant_content(response: dict) -> str:
     """Text to persist as the assistant's turn for a /query response.
 
-    summarize mode has a natural-language ``answer``; find mode does not, so we
-    record a concise description of what was returned.
+    Every response now carries a natural-language ``answer``; the fallback only
+    matters if one is ever absent.
     """
-    if "answer" in response:
+    if response.get("answer"):
         return response["answer"]
     sources = response.get("sources") or []
     n = len(response.get("chunks", []))
-    return f"[find] {n} chunk(s) from: {', '.join(sources) if sources else 'none'}"
+    return f"[search] {n} chunk(s) from: {', '.join(sources) if sources else 'none'}"
 
 
-@router.post("/query")
-def query_endpoint(req: QueryRequest):
-    if not req.message.strip():
-        raise HTTPException(status_code=400, detail="message must not be empty")
+def _run_search(query: str, filters: dict, folder_ids: list[str]):
+    """Run the (intact) Qdrant search + on-demand embedding for ``query``.
 
-    # Active operational mode (local/brix) is recorded with every message.
-    active_mode = modes.get_mode()
-    # Snapshot prior history BEFORE logging the current question, so generation
-    # sees "conversation so far" without the current turn duplicated in it.
-    history = memory.get_messages(limit=HISTORY_LIMIT)
-    memory.add_message("user", req.message, active_mode)
-
-    mode = _detect_mode(req.message)
-    folder_ids = req.folder_ids or []
-    # Map requested folder ids -> their topics so we can scope the vector search.
+    Returns ``(chunks, embedded_now)``. Raises on search failure.
+    """
     folder_topics = ingest._folder_topics(folder_ids) if folder_ids else set()
-
     embedded_now = 0
-    try:
-        # Step 1: search what's already indexed (scoped if folders requested).
-        hits = _search(req.message, req.filters, folder_topics)
-        top_score = hits[0].score if hits else 0.0
 
-        # Step 2: if scope was requested, or confidence is low, pull in matching
-        # pending files from the registry and embed them on demand.
-        if folder_ids or top_score < _CONFIDENCE_THRESHOLD:
-            info = ingest.embed_on_demand(req.message, folder_ids or None)
-            embedded_now = info.get("indexed", 0)
-            if embedded_now:
-                # Step 6: re-search now that new content is indexed.
-                hits = _search(req.message, req.filters, folder_topics)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"search failed: {exc}")
+    # Search what's already indexed (scoped if folders requested).
+    hits = _search(query, filters, folder_topics)
+    top_score = hits[0].score if hits else 0.0
+
+    # If scope was requested, or confidence is low, pull in matching pending
+    # files from the registry, embed them on demand, then re-search.
+    if folder_ids or top_score < _CONFIDENCE_THRESHOLD:
+        info = ingest.embed_on_demand(query, folder_ids or None)
+        embedded_now = info.get("indexed", 0)
+        if embedded_now:
+            hits = _search(query, filters, folder_topics)
 
     chunks = []
     for hit in hits:
@@ -126,53 +147,98 @@ def query_endpoint(req: QueryRequest):
                 "score": hit.score,
             }
         )
+    return chunks, embedded_now
 
-    if mode == "find":
+
+@router.post("/query")
+def query_endpoint(req: QueryRequest):
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="message must not be empty")
+
+    # Active operational mode (local/brix) is recorded with every message.
+    active_mode = modes.get_mode()
+    # Snapshot prior history BEFORE logging the current question, so generation
+    # sees "conversation so far" without the current turn duplicated in it.
+    history = memory.get_messages(limit=HISTORY_LIMIT)
+    memory.add_message("user", req.message, active_mode)
+
+    # Pass 1 — ask the LLM whether it needs the stored documents. With tools off
+    # and the search instruction appended, it either answers normally or returns
+    # the {"action": "search", "query": ...} JSON.
+    try:
+        decision = generate.generate(
+            req.message,
+            "",
+            mode=active_mode,
+            history=history,
+            system_suffix=_SEARCH_INSTRUCTION,
+            tools_enabled=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
+
+    search_query = _parse_search_action(decision["answer"])
+
+    # No search needed -> the first response IS the answer. No Qdrant involved.
+    if search_query is None:
         response = {
-            "mode": "find",
+            "mode": "chat",
             "active_mode": active_mode,
             "question": req.message,
-            "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
-            "chunks": chunks,
-            "embedded_on_demand": embedded_now,
-            # find mode is pure retrieval — no LLM produced this answer.
-            "backend": "retrieval",
-            "tps": None,
+            "answer": decision["answer"],
+            "sources": [],
+            "chunks": [],
+            "embedded_on_demand": 0,
+            "backend": decision["backend"],
+            "tps": decision.get("tps"),
         }
-    elif not chunks:
-        # summarize mode, but nothing relevant was retrieved.
+        memory.add_message("assistant", _assistant_content(response), active_mode)
+        return response
+
+    # Search needed -> run retrieval with the model's query (fall back to the
+    # original message if it didn't supply one).
+    query = search_query or req.message
+    folder_ids = req.folder_ids or []
+    try:
+        chunks, embedded_now = _run_search(query, req.filters, folder_ids)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"search failed: {exc}")
+
+    if not chunks:
         response = {
             "mode": "summarize",
             "active_mode": active_mode,
             "question": req.message,
             "answer": "No relevant content was found in the indexed files.",
             "sources": [],
+            "chunks": [],
+            "embedded_on_demand": embedded_now,
             "backend": "retrieval",
             "tps": None,
         }
-    else:
-        # summarize mode -> hand the retrieved context to the generation layer,
-        # with the active personality (mode) and recent conversation history.
-        context = "\n\n---\n\n".join(
-            f"[{c['filename']}]\n{c['text']}" for c in chunks
-        )
-        try:
-            result = generate.generate(
-                req.message, context, mode=active_mode, history=history
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
-        response = {
-            "mode": "summarize",
-            "active_mode": active_mode,
-            "question": req.message,
-            "answer": result["answer"],
-            "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
-            "embedded_on_demand": embedded_now,
-            "backend": result["backend"],
-            "tps": result.get("tps"),
-        }
+        memory.add_message("assistant", _assistant_content(response), active_mode)
+        return response
 
+    # Pass 2 — inject the retrieved chunks as context and ask for a final answer.
+    context = "\n\n---\n\n".join(f"[{c['filename']}]\n{c['text']}" for c in chunks)
+    try:
+        result = generate.generate(
+            req.message, context, mode=active_mode, history=history
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"generation failed: {exc}")
+
+    response = {
+        "mode": "summarize",
+        "active_mode": active_mode,
+        "question": req.message,
+        "answer": result["answer"],
+        "sources": sorted({c["filename"] for c in chunks if c["filename"]}),
+        "chunks": chunks,
+        "embedded_on_demand": embedded_now,
+        "backend": result["backend"],
+        "tps": result.get("tps"),
+    }
     memory.add_message("assistant", _assistant_content(response), active_mode)
     return response
 

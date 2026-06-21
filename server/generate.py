@@ -112,12 +112,18 @@ def _get_claude_client():
     return _claude_client
 
 
-def claude_generate(question: str, context: str, mode: str | None, history: list[dict] | None) -> str:
+def claude_generate(
+    question: str,
+    context: str,
+    mode: str | None,
+    history: list[dict] | None,
+    system_suffix: str = "",
+) -> str:
     client = _get_claude_client()
     response = client.messages.create(
         model=settings.CLAUDE_MODEL,
         max_tokens=1024,
-        system=system_prompt_for(mode),
+        system=system_prompt_for(mode) + system_suffix,
         messages=[{"role": "user", "content": build_prompt(question, context, history)}],
     )
     return "".join(block.text for block in response.content if block.type == "text")
@@ -189,7 +195,14 @@ def _ollama_chat(messages: list[dict], tools: list[dict] | None) -> dict:
         raise OllamaUnavailable(f"invalid response from Ollama: {exc}") from exc
 
 
-def ollama_generate(question: str, context: str, mode: str | None, history: list[dict] | None) -> str:
+def ollama_generate(
+    question: str,
+    context: str,
+    mode: str | None,
+    history: list[dict] | None,
+    system_suffix: str = "",
+    tools_enabled: bool = True,
+) -> str:
     """Generate via Ollama's /api/chat endpoint, with tool calling.
 
     The model is offered the tools in :data:`server.tools.TOOL_SCHEMAS`. When it
@@ -197,22 +210,34 @@ def ollama_generate(question: str, context: str, mode: str | None, history: list
     messages, and let the model continue — looping until it returns a plain text
     answer (or the safety cap is hit). Any connection problem raises
     :class:`OllamaUnavailable`, and the dispatcher falls back to Claude.
+
+    ``system_suffix`` is appended to the system prompt (used by the /query
+    search-decision pass). When ``tools_enabled`` is False the RAG tools and the
+    tools guidance are withheld — the model just produces text — which is what
+    the decision pass needs so it returns the plain {"action": ...} JSON.
     """
     from server import tools  # lazy import to avoid an import cycle
 
+    system = system_prompt_for(mode)
+    if tools_enabled:
+        system += _TOOLS_GUIDANCE
+    system += system_suffix
+    schemas = tools.TOOL_SCHEMAS if tools_enabled else None
+
     messages: list[dict] = [
-        {"role": "system", "content": system_prompt_for(mode) + _TOOLS_GUIDANCE},
+        {"role": "system", "content": system},
         {"role": "user", "content": build_prompt(question, context, history)},
     ]
 
     for _ in range(_MAX_TOOL_ROUNDS):
-        data = _ollama_chat(messages, tools.TOOL_SCHEMAS)
+        data = _ollama_chat(messages, schemas)
         msg = data.get("message", {}) or {}
         tool_calls = msg.get("tool_calls") or []
 
         # Fallback: some models emit the tool call as JSON text in `content`
-        # rather than in the structured tool_calls field — recover it.
-        if not tool_calls:
+        # rather than in the structured tool_calls field — recover it. Skipped
+        # when tools are disabled (the decision pass must keep its JSON intact).
+        if tools_enabled and not tool_calls:
             recovered = _parse_text_tool_call(msg.get("content", ""))
             if recovered:
                 tool_calls = [recovered]
@@ -259,6 +284,8 @@ def generate(
     context: str,
     mode: str | None = None,
     history: list[dict] | None = None,
+    system_suffix: str = "",
+    tools_enabled: bool = True,
 ) -> dict:
     """Generate an answer with the configured backend.
 
@@ -268,21 +295,26 @@ def generate(
     so the UI's POST /config takes effect immediately. When backend is "ollama"
     and the auto-fallback toggle is on, an unreachable Ollama falls back to
     Claude.
+
+    ``system_suffix`` is appended to the system prompt and ``tools_enabled``
+    toggles the Ollama RAG tools — both used by /query's search-decision pass.
     """
     backend = runtime.get_backend()
     if backend == "ollama":
         try:
-            answer = ollama_generate(question, context, mode, history)
+            answer = ollama_generate(
+                question, context, mode, history, system_suffix, tools_enabled
+            )
             return {"answer": answer, "backend": "ollama", "tps": _last_tps}
         except OllamaUnavailable as exc:
             if not runtime.get_fallback():
                 raise
             log.warning("falling back to Claude (Ollama unavailable: %s)", exc)
-            answer = claude_generate(question, context, mode, history)
+            answer = claude_generate(question, context, mode, history, system_suffix)
             return {"answer": answer, "backend": "claude", "tps": None}
     if backend == "claude":
         return {
-            "answer": claude_generate(question, context, mode, history),
+            "answer": claude_generate(question, context, mode, history, system_suffix),
             "backend": "claude",
             "tps": None,
         }
